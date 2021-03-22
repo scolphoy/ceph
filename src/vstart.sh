@@ -22,12 +22,12 @@ debug() {
 
 prunb() {
     debug quoted_print "$@" '&'
-    "$@" &
+    PATH=$CEPH_BIN:$PATH "$@" &
 }
 
 prun() {
     debug quoted_print "$@"
-    "$@"
+    PATH=$CEPH_BIN:$PATH "$@"
 }
 
 
@@ -408,7 +408,7 @@ case $1 in
         shift
         ;;
     -o)
-        extra_conf="$extra_conf	$2"
+        extra_conf+=$'\n'"$2"
         shift
         ;;
     --cache)
@@ -548,6 +548,21 @@ done
 
 }
 
+format_conf() {
+    local opts=$1
+    local indent="        "
+    local opt
+    local formatted
+    while read -r opt; do
+        if [ -z "$formatted" ]; then
+            formatted="${opt}"
+        else
+            formatted+=$'\n'${indent}${opt}
+        fi
+    done <<< "$opts"
+    echo "$formatted"
+}
+
 prepare_conf() {
     local DAEMONOPTS="
         log file = $CEPH_OUT_DIR/\$name.log
@@ -564,22 +579,16 @@ prepare_conf() {
 
     local msgr_conf=''
     if [ $msgr -eq 21 ]; then
-        msgr_conf="
-        ms bind msgr2 = true
-        ms bind msgr1 = true
-";
+        msgr_conf="ms bind msgr2 = true
+                   ms bind msgr1 = true"
     fi
     if [ $msgr -eq 2 ]; then
-	msgr_conf="
-        ms bind msgr2 = true
-        ms bind msgr1 = false
-";
+        msgr_conf="ms bind msgr2 = true
+                   ms bind msgr1 = false"
     fi
     if [ $msgr -eq 1 ]; then
-	msgr_conf="
-        ms bind msgr2 = false
-        ms bind msgr1 = true
-";
+        msgr_conf="ms bind msgr2 = false
+                   ms bind msgr1 = true"
     fi
 
     wconf <<EOF
@@ -607,8 +616,8 @@ prepare_conf() {
         enable experimental unrecoverable data corrupting features = *
         osd_crush_chooseleaf_type = 0
         debug asok assert abort = true
-$msgr_conf
-$extra_conf
+        $(format_conf "${msgr_conf}")
+        $(format_conf "${extra_conf}")
 EOF
     if [ "$lockdep" -eq 1 ] ; then
         wconf <<EOF
@@ -682,8 +691,7 @@ EOF
         ; uncomment the following to set LC days as the value in seconds;
         ; needed for passing lc time based s3-tests (can be verbose)
         ; rgw lc debug interval = 10
-
-$extra_conf
+        $(format_conf "${extra_conf}")
 EOF
 	do_rgw_conf
 	wconf << EOF
@@ -692,13 +700,13 @@ $DAEMONOPTS
         mds data = $CEPH_DEV_DIR/mds.\$id
         mds root ino uid = `id -u`
         mds root ino gid = `id -g`
-$extra_conf
+        $(format_conf "${extra_conf}")
 [mgr]
         mgr data = $CEPH_DEV_DIR/mgr.\$id
         mgr module path = $MGR_PYTHON_PATH
         cephadm path = $CEPH_ROOT/src/cephadm/cephadm
 $DAEMONOPTS
-$extra_conf
+        $(format_conf "${extra_conf}")
 [osd]
 $DAEMONOPTS
         osd_check_max_object_name_len_on_startup = false
@@ -725,12 +733,12 @@ $BLUESTORE_OPTS
         kstore fsck on mount = true
         osd objectstore = $objectstore
 $COSDSHORT
-$extra_conf
+        $(format_conf "${extra_conf}")
 [mon]
         mgr initial modules = $mgr_modules
 $DAEMONOPTS
 $CMONDEBUG
-$extra_conf
+        $(format_conf "${extra_conf}")
         mon cluster log file = $CEPH_OUT_DIR/cluster.mon.\$id.log
         osd pool default erasure code profile = plugin=jerasure technique=reed_sol_van k=2 m=1 crush-failure-domain=osd
 EOF
@@ -905,7 +913,7 @@ EOF
             echo "{\"cephx_secret\": \"$OSD_SECRET\"}" > $CEPH_DEV_DIR/osd$osd/new.json
             ceph_adm osd new $uuid -i $CEPH_DEV_DIR/osd$osd/new.json
             rm $CEPH_DEV_DIR/osd$osd/new.json
-            $SUDO $CEPH_BIN/$ceph_osd $extra_osd_args -i $osd $ARGS --mkfs --key $OSD_SECRET --osd-uuid $uuid $extra_seastar_args
+            prun $SUDO $CEPH_BIN/$ceph_osd $extra_osd_args -i $osd $ARGS --mkfs --key $OSD_SECRET --osd-uuid $uuid $extra_seastar_args
 
             local key_fn=$CEPH_DEV_DIR/osd$osd/keyring
             cat > $key_fn<<EOF
@@ -1028,7 +1036,7 @@ EOF
 	if [ "$new" -eq 1 ]; then
 		digest=$(curl -s \
 		https://registry.hub.docker.com/v2/repositories/ceph/daemon-base/tags/latest-master-devel \
-		| jq -r '.images[].digest')
+		| jq -r '.images[0].digest')
 		ceph_adm config set global container_image "docker.io/ceph/daemon-base@$digest"
 	fi
         ceph_adm config-key set mgr/cephadm/ssh_identity_key -i ~/.ssh/id_rsa
@@ -1118,7 +1126,7 @@ start_ganesha() {
     cluster_id="vstart"
     GANESHA_PORT=$(($CEPH_PORT + 4000))
     local ganesha=0
-    test_user="ganesha-$cluster_id"
+    test_user="$cluster_id"
     pool_name="nfs-ganesha"
     namespace=$cluster_id
     url="rados://$pool_name/$namespace/conf-nfs.$test_user"
@@ -1161,8 +1169,6 @@ start_ganesha() {
            Minor_Versions = 1, 2;
         }
 
-        %url $url
-
         RADOS_KV {
            pool = $pool_name;
            namespace = $namespace;
@@ -1172,8 +1178,10 @@ start_ganesha() {
 
         RADOS_URLS {
 	   Userid = $test_user;
-	   watch_url = \"$url\";
-        }" > "$ganesha_dir/ganesha-$name.conf"
+	   watch_url = '$url';
+        }
+
+	%url $url" > "$ganesha_dir/ganesha-$name.conf"
 	wconf <<EOF
 [ganesha.$name]
         host = $HOSTNAME

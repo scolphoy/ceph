@@ -265,7 +265,8 @@ cdef nogil:
 
     int rados_nobjects_list_open(rados_ioctx_t io, rados_list_ctx_t *ctx):
         pass
-    int rados_nobjects_list_next(rados_list_ctx_t ctx, const char **entry, const char **key, const char **nspace):
+    int rados_nobjects_list_next2(rados_list_ctx_t ctx, const char **entry, const char **key, const char **nspace,
+				  size_t *entry_size, size_t *key_size, size_t *nspace_size):
         pass
     void rados_nobjects_list_close(rados_list_ctx_t ctx):
         pass
@@ -378,6 +379,8 @@ cdef nogil:
         pass
     int rados_aio_write_op_operate(rados_write_op_t write_op, rados_ioctx_t io, rados_completion_t completion, const char *oid, time_t *mtime, int flags):
         pass
+    void rados_write_op_cmpext(rados_write_op_t write_op, const char *cmp_buf, size_t cmp_len, uint64_t off, int *prval):
+        pass
     void rados_write_op_omap_set(rados_write_op_t write_op, const char * const* keys, const char * const* vals, const size_t * lens, size_t num):
         pass
     void rados_write_op_omap_rm_keys(rados_write_op_t write_op, const char * const* keys, size_t keys_len):
@@ -412,6 +415,8 @@ cdef nogil:
     void rados_write_op_exec(rados_write_op_t write_op, const char *cls, const char *method, const char *in_buf, size_t in_len, int *prval):
         pass
     void rados_write_op_writesame(rados_write_op_t write_op, const char *buffer, size_t data_len, size_t write_len, uint64_t offset):
+        pass
+    void rados_read_op_cmpext(rados_read_op_t read_op, const char *cmp_buf, size_t cmp_len, uint64_t off, int *prval):
         pass
     void rados_read_op_omap_get_vals2(rados_read_op_t read_op, const char * start_after, const char * filter_prefix, uint64_t max_return, rados_omap_iter_t * iter, unsigned char *pmore, int * prval):
         pass

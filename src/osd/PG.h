@@ -33,7 +33,6 @@
 
 #include "PGLog.h"
 #include "OSDMap.h"
-#include "messages/MOSDPGLog.h"
 #include "include/str_list.h"
 #include "PGBackend.h"
 #include "PGPeeringEvent.h"
@@ -57,14 +56,10 @@ class OSD;
 class OSDService;
 class OSDShard;
 class OSDShardPGSlot;
-class MOSDPGScan;
-class MOSDPGBackfill;
-class MOSDPGInfo;
 
 class PG;
 struct OpRequest;
 typedef OpRequest::Ref OpRequestRef;
-class MOSDPGLog;
 class DynamicPerfStats;
 class PgScrubber;
 
@@ -185,6 +180,10 @@ public:
   requested_scrub_t m_planned_scrub;
   /// scrubbing state for both Primary & replicas
   bool is_scrub_active() const { return m_scrubber->is_scrub_active(); }
+
+  bool get_reserve_failed() const { return m_scrubber->get_reserve_failed(); }
+  void set_reserve_failed() { m_scrubber->set_reserve_failed(); }
+  void clear_reserve_failed() { m_scrubber->clear_reserve_failed(); }
 
 public:
   // -- members --
@@ -485,7 +484,7 @@ public:
     return std::make_unique<PG::PGLogEntryHandler>(this, &t);
   }
 
-  ghobject_t do_delete_work(ObjectStore::Transaction &t,
+  std::pair<ghobject_t, bool> do_delete_work(ObjectStore::Transaction &t,
     ghobject_t _next) override;
 
   void clear_ready_to_merge() override;
@@ -533,8 +532,8 @@ public:
   void dump_pgstate_history(ceph::Formatter *f);
   void dump_missing(ceph::Formatter *f);
 
-  void get_pg_stats(std::function<void(const pg_stat_t&, epoch_t lec)> f);
-  void with_heartbeat_peers(std::function<void(int)> f);
+  void with_pg_stats(std::function<void(const pg_stat_t&, epoch_t lec)>&& f);
+  void with_heartbeat_peers(std::function<void(int)>&& f);
 
   void shutdown();
   virtual void on_shutdown() = 0;
@@ -568,6 +567,9 @@ private:
 				  bool allow_regular_scrub,
 				  bool has_deep_errors,
 				  requested_scrub_t& planned) const;
+
+  using ScrubAPI = void (ScrubPgIF::*)(epoch_t epoch_queued);
+  void forward_scrub_event(ScrubAPI fn, epoch_t epoch_queued);
 
 public:
   virtual void do_request(
@@ -944,8 +946,7 @@ protected:
   // publish stats
   ceph::mutex pg_stats_publish_lock =
     ceph::make_mutex("PG::pg_stats_publish_lock");
-  bool pg_stats_publish_valid;
-  pg_stat_t pg_stats_publish;
+  std::optional<pg_stat_t> pg_stats_publish;
 
   friend class TestOpsSocketHook;
   void publish_stats_to_osd() override;

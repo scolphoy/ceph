@@ -360,6 +360,9 @@
 /* Define if unit tests are built. */
 #cmakedefine UNIT_TESTS_BUILT
 
+/* Define if RBD QCOW migration format is enabled */
+#cmakedefine WITH_RBD_MIGRATION_FORMAT_QCOW_V1
+
 /* Define if RWL is enabled */
 #cmakedefine WITH_RBD_RWL
 
@@ -368,6 +371,9 @@
 
 /* Define if libcryptsetup version < 2.0.5 */
 #cmakedefine LIBCRYPTSETUP_LEGACY_DATA_ALIGNMENT
+
+/* Define if libcryptsetup can be used (linux only) */
+#cmakedefine HAVE_LIBCRYPTSETUP
 
 /* Shared library extension, such as .so, .dll or .dylib */
 #cmakedefine CMAKE_SHARED_LIBRARY_SUFFIX "@CMAKE_SHARED_LIBRARY_SUFFIX@"

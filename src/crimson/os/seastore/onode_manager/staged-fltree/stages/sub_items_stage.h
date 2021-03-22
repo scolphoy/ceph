@@ -1,4 +1,4 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
 // vim: ts=8 sw=2 smarttab
 
 #pragma once
@@ -40,7 +40,7 @@ struct internal_sub_item_t {
  */
 class internal_sub_items_t {
  public:
-  using num_keys_t = size_t;
+  using num_keys_t = index_t;
 
   internal_sub_items_t(const memory_range_t& range) {
     assert(range.p_start < range.p_end);
@@ -55,42 +55,66 @@ class internal_sub_items_t {
   using key_get_type = const snap_gen_t&;
   static constexpr auto CONTAINER_TYPE = ContainerType::INDEXABLE;
   num_keys_t keys() const { return num_items; }
-  key_get_type operator[](size_t index) const {
+  key_get_type operator[](index_t index) const {
     assert(index < num_items);
     return (p_first_item - index)->get_key();
   }
-  node_offset_t size_before(size_t index) const {
+  node_offset_t size_before(index_t index) const {
     size_t ret = index * sizeof(internal_sub_item_t);
     assert(ret < NODE_BLOCK_SIZE);
     return ret;
   }
-  const laddr_packed_t* get_p_value(size_t index) const {
+  const laddr_packed_t* get_p_value(index_t index) const {
     assert(index < num_items);
     return (p_first_item - index)->get_p_value();
   }
-  node_offset_t size_overhead_at(size_t index) const { return 0u; }
+  node_offset_t size_overhead_at(index_t index) const { return 0u; }
+  void encode(const char* p_node_start, ceph::bufferlist& encoded) const {
+    auto p_end = reinterpret_cast<const char*>(p_first_item) +
+                 sizeof(internal_sub_item_t);
+    auto p_start = p_end - num_items * sizeof(internal_sub_item_t);
+    int start_offset = p_start - p_node_start;
+    int end_offset = p_end - p_node_start;
+    assert(start_offset > 0 &&
+           start_offset < end_offset &&
+           end_offset < NODE_BLOCK_SIZE);
+    ceph::encode(static_cast<node_offset_t>(start_offset), encoded);
+    ceph::encode(static_cast<node_offset_t>(end_offset), encoded);
+  }
+
+  static internal_sub_items_t decode(
+      const char* p_node_start, ceph::bufferlist::const_iterator& delta) {
+    node_offset_t start_offset;
+    ceph::decode(start_offset, delta);
+    node_offset_t end_offset;
+    ceph::decode(end_offset, delta);
+    assert(start_offset < end_offset);
+    assert(end_offset <= NODE_BLOCK_SIZE);
+    return internal_sub_items_t({p_node_start + start_offset,
+                                 p_node_start + end_offset});
+  }
 
   static node_offset_t header_size() { return 0u; }
 
   template <KeyT KT>
   static node_offset_t estimate_insert(
-      const full_key_t<KT>&, const laddr_packed_t&) {
+      const full_key_t<KT>&, const laddr_t&) {
     return sizeof(internal_sub_item_t);
   }
 
   template <KeyT KT>
   static const laddr_packed_t* insert_at(
       NodeExtentMutable&, const internal_sub_items_t&,
-      const full_key_t<KT>&, const laddr_packed_t&,
-      size_t index, node_offset_t size, const char* p_left_bound);
+      const full_key_t<KT>&, const laddr_t&,
+      index_t index, node_offset_t size, const char* p_left_bound);
 
-  static node_offset_t trim_until(NodeExtentMutable&, internal_sub_items_t&, size_t);
+  static node_offset_t trim_until(NodeExtentMutable&, internal_sub_items_t&, index_t);
 
   template <KeyT KT>
   class Appender;
 
  private:
-  size_t num_items;
+  index_t num_items;
   const internal_sub_item_t* p_first_item;
 };
 
@@ -99,8 +123,8 @@ class internal_sub_items_t::Appender {
  public:
   Appender(NodeExtentMutable* p_mut, char* p_append)
     : p_mut{p_mut}, p_append{p_append} {}
-  void append(const internal_sub_items_t& src, size_t from, size_t items);
-  void append(const full_key_t<KT>&, const laddr_packed_t&, const laddr_packed_t*&);
+  void append(const internal_sub_items_t& src, index_t from, index_t items);
+  void append(const full_key_t<KT>&, const laddr_t&, const laddr_packed_t*&);
   char* wrap() { return p_append; }
  private:
   NodeExtentMutable* p_mut;
@@ -111,7 +135,7 @@ class internal_sub_items_t::Appender {
  * leaf_sub_items_t
  *
  * The STAGE_RIGHT implementation for leaf node N0/N1/N2, implements staged
- * contract as an indexable container to index snap-gen to onode_t.
+ * contract as an indexable container to index snap-gen to value_header_t.
  *
  * The layout of the contaner storing n sub-items:
  *
@@ -119,7 +143,7 @@ class internal_sub_items_t::Appender {
  * # <---------- sub-items ----------------> # <--- offsets ---------#          #
  * #<~># sub-items [2, n)                    #<~>| offsets [2, n)    #          #
  * #   # <- sub-item 1 -> # <- sub-item 0 -> #   |                   #          #
- * #...# snap-gen | onode # snap-gen | onode #...| offset1 | offset0 # num_keys #
+ * #...# snap-gen | value # snap-gen | value #...| offset1 | offset0 # num_keys #
  *                                           ^             ^         ^
  *                                           |             |         |
  *                               p_items_end +   p_offsets +         |
@@ -128,7 +152,7 @@ class internal_sub_items_t::Appender {
 class leaf_sub_items_t {
  public:
   // TODO: decide by NODE_BLOCK_SIZE, sizeof(snap_gen_t),
-  //       and the minimal size of onode_t
+  //       and the minimal size of value
   using num_keys_t = uint8_t;
 
   leaf_sub_items_t(const memory_range_t& range) {
@@ -153,21 +177,21 @@ class leaf_sub_items_t {
 
   const char* p_start() const { return get_item_end(keys()); }
 
-  const node_offset_packed_t& get_offset(size_t index) const {
+  const node_offset_packed_t& get_offset(index_t index) const {
     assert(index < keys());
     return *(p_offsets - index);
   }
 
-  const node_offset_t get_offset_to_end(size_t index) const {
+  const node_offset_t get_offset_to_end(index_t index) const {
     assert(index <= keys());
     return index == 0 ? 0 : get_offset(index - 1).value;
   }
 
-  const char* get_item_start(size_t index) const {
+  const char* get_item_start(index_t index) const {
     return p_items_end - get_offset(index).value;
   }
 
-  const char* get_item_end(size_t index) const {
+  const char* get_item_end(index_t index) const {
     return p_items_end - get_offset_to_end(index);
   }
 
@@ -175,7 +199,7 @@ class leaf_sub_items_t {
   using key_get_type = const snap_gen_t&;
   static constexpr auto CONTAINER_TYPE = ContainerType::INDEXABLE;
   num_keys_t keys() const { return *p_num_keys; }
-  key_get_type operator[](size_t index) const {
+  key_get_type operator[](index_t index) const {
     assert(index < keys());
     auto pointer = get_item_end(index);
     assert(get_item_start(index) < pointer);
@@ -183,7 +207,7 @@ class leaf_sub_items_t {
     assert(get_item_start(index) < pointer);
     return *reinterpret_cast<const snap_gen_t*>(pointer);
   }
-  node_offset_t size_before(size_t index) const {
+  node_offset_t size_before(index_t index) const {
     assert(index <= keys());
     size_t ret;
     if (index == 0) {
@@ -197,29 +221,54 @@ class leaf_sub_items_t {
     assert(ret < NODE_BLOCK_SIZE);
     return ret;
   }
-  node_offset_t size_overhead_at(size_t index) const { return sizeof(node_offset_t); }
-  const onode_t* get_p_value(size_t index) const {
+  node_offset_t size_overhead_at(index_t index) const { return sizeof(node_offset_t); }
+  const value_header_t* get_p_value(index_t index) const {
     assert(index < keys());
     auto pointer = get_item_start(index);
-    auto value = reinterpret_cast<const onode_t*>(pointer);
-    assert(pointer + value->size + sizeof(snap_gen_t) == get_item_end(index));
+    auto value = reinterpret_cast<const value_header_t*>(pointer);
+    assert(pointer + value->allocation_size() + sizeof(snap_gen_t) ==
+           get_item_end(index));
     return value;
+  }
+  void encode(const char* p_node_start, ceph::bufferlist& encoded) const {
+    auto p_end = reinterpret_cast<const char*>(p_num_keys) +
+                  sizeof(num_keys_t);
+    int start_offset = p_start() - p_node_start;
+    int end_offset = p_end - p_node_start;
+    assert(start_offset > 0 &&
+           start_offset < end_offset &&
+           end_offset < NODE_BLOCK_SIZE);
+    ceph::encode(static_cast<node_offset_t>(start_offset), encoded);
+    ceph::encode(static_cast<node_offset_t>(end_offset), encoded);
+  }
+
+  static leaf_sub_items_t decode(
+      const char* p_node_start, ceph::bufferlist::const_iterator& delta) {
+    node_offset_t start_offset;
+    ceph::decode(start_offset, delta);
+    node_offset_t end_offset;
+    ceph::decode(end_offset, delta);
+    assert(start_offset < end_offset);
+    assert(end_offset <= NODE_BLOCK_SIZE);
+    return leaf_sub_items_t({p_node_start + start_offset,
+                             p_node_start + end_offset});
   }
 
   static node_offset_t header_size() { return sizeof(num_keys_t); }
 
   template <KeyT KT>
-  static node_offset_t estimate_insert(const full_key_t<KT>&, const onode_t& value) {
-    return value.size + sizeof(snap_gen_t) + sizeof(node_offset_t);
+  static node_offset_t estimate_insert(
+      const full_key_t<KT>&, const value_config_t& value) {
+    return value.allocation_size() + sizeof(snap_gen_t) + sizeof(node_offset_t);
   }
 
   template <KeyT KT>
-  static const onode_t* insert_at(
+  static const value_header_t* insert_at(
       NodeExtentMutable&, const leaf_sub_items_t&,
-      const full_key_t<KT>&, const onode_t&,
-      size_t index, node_offset_t size, const char* p_left_bound);
+      const full_key_t<KT>&, const value_config_t&,
+      index_t index, node_offset_t size, const char* p_left_bound);
 
-  static node_offset_t trim_until(NodeExtentMutable&, leaf_sub_items_t&, size_t index);
+  static node_offset_t trim_until(NodeExtentMutable&, leaf_sub_items_t&, index_t index);
 
   template <KeyT KT>
   class Appender;
@@ -231,17 +280,17 @@ class leaf_sub_items_t {
   const char* p_items_end;
 };
 
-auto constexpr APPENDER_LIMIT = 3u;
+constexpr index_t APPENDER_LIMIT = 3u;
 
 template <KeyT KT>
 class leaf_sub_items_t::Appender {
   struct range_items_t {
-    size_t from;
-    size_t items;
+    index_t from;
+    index_t items;
   };
   struct kv_item_t {
     const full_key_t<KT>* p_key;
-    const onode_t* p_value;
+    value_config_t value_config;
   };
   using var_t = std::variant<range_items_t, kv_item_t>;
 
@@ -250,7 +299,7 @@ class leaf_sub_items_t::Appender {
     : p_mut{p_mut}, p_append{p_append} {
   }
 
-  void append(const leaf_sub_items_t& src, size_t from, size_t items) {
+  void append(const leaf_sub_items_t& src, index_t from, index_t items) {
     assert(cnt <= APPENDER_LIMIT);
     assert(from <= src.keys());
     if (items == 0) {
@@ -267,10 +316,10 @@ class leaf_sub_items_t::Appender {
     ++cnt;
   }
   void append(const full_key_t<KT>& key,
-              const onode_t& value, const onode_t*& p_value) {
+              const value_config_t& value, const value_header_t*& p_value) {
     assert(pp_value == nullptr);
     assert(cnt <= APPENDER_LIMIT);
-    appends[cnt] = kv_item_t{&key, &value};
+    appends[cnt] = kv_item_t{&key, value};
     ++cnt;
     pp_value = &p_value;
   }
@@ -278,11 +327,11 @@ class leaf_sub_items_t::Appender {
 
  private:
   std::optional<leaf_sub_items_t> op_src;
-  const onode_t** pp_value = nullptr;
+  const value_header_t** pp_value = nullptr;
   NodeExtentMutable* p_mut;
   char* p_append;
   var_t appends[APPENDER_LIMIT];
-  size_t cnt = 0;
+  index_t cnt = 0;
 };
 
 template <node_type_t> struct _sub_items_t;

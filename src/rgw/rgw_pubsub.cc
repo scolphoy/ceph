@@ -841,13 +841,13 @@ void RGWPubSub::SubWithEvents<EventType>::list_events_result::dump(Formatter *f)
 }
 
 template<typename EventType>
-int RGWPubSub::SubWithEvents<EventType>::list_events(const string& marker, int max_events)
+int RGWPubSub::SubWithEvents<EventType>::list_events(const DoutPrefixProvider *dpp, const string& marker, int max_events)
 {
   RGWRados *store = ps->store->getRados();
   rgw_pubsub_sub_config sub_conf;
   int ret = get_conf(&sub_conf);
   if (ret < 0) {
-    ldout(store->ctx(), 1) << "ERROR: failed to read sub config: ret=" << ret << dendl;
+    ldpp_dout(dpp, 1) << "ERROR: failed to read sub config: ret=" << ret << dendl;
     return ret;
   }
 
@@ -859,7 +859,7 @@ int RGWPubSub::SubWithEvents<EventType>::list_events(const string& marker, int m
     return 0;
   }
   if (ret < 0) {
-    ldout(store->ctx(), 1) << "ERROR: failed to read bucket info for events bucket: bucket=" << sub_conf.dest.bucket_name << " ret=" << ret << dendl;
+    ldpp_dout(dpp, 1) << "ERROR: failed to read bucket info for events bucket: bucket=" << sub_conf.dest.bucket_name << " ret=" << ret << dendl;
     return ret;
   }
 
@@ -871,9 +871,9 @@ int RGWPubSub::SubWithEvents<EventType>::list_events(const string& marker, int m
 
   std::vector<rgw_bucket_dir_entry> objs;
 
-  ret = list_op.list_objects(max_events, &objs, nullptr, &list.is_truncated, null_yield);
+  ret = list_op.list_objects(dpp, max_events, &objs, nullptr, &list.is_truncated, null_yield);
   if (ret < 0) {
-    ldout(store->ctx(), 1) << "ERROR: failed to list bucket: bucket=" << sub_conf.dest.bucket_name << " ret=" << ret << dendl;
+    ldpp_dout(dpp, 1) << "ERROR: failed to list bucket: bucket=" << sub_conf.dest.bucket_name << " ret=" << ret << dendl;
     return ret;
   }
   if (list.is_truncated) {
@@ -887,7 +887,7 @@ int RGWPubSub::SubWithEvents<EventType>::list_events(const string& marker, int m
     try {
       bl.decode_base64(bl64);
     } catch (buffer::error& err) {
-      ldout(store->ctx(), 1) << "ERROR: failed to event (not a valid base64)" << dendl;
+      ldpp_dout(dpp, 1) << "ERROR: failed to event (not a valid base64)" << dendl;
       continue;
     }
     EventType event;
@@ -896,7 +896,7 @@ int RGWPubSub::SubWithEvents<EventType>::list_events(const string& marker, int m
     try {
       decode(event, iter);
     } catch (buffer::error& err) {
-      ldout(store->ctx(), 1) << "ERROR: failed to decode event" << dendl;
+      ldpp_dout(dpp, 1) << "ERROR: failed to decode event" << dendl;
       continue;
     };
 
@@ -906,13 +906,13 @@ int RGWPubSub::SubWithEvents<EventType>::list_events(const string& marker, int m
 }
 
 template<typename EventType>
-int RGWPubSub::SubWithEvents<EventType>::remove_event(const string& event_id)
+int RGWPubSub::SubWithEvents<EventType>::remove_event(const DoutPrefixProvider *dpp, const string& event_id)
 {
   rgw::sal::RGWRadosStore *store = ps->store;
   rgw_pubsub_sub_config sub_conf;
   int ret = get_conf(&sub_conf);
   if (ret < 0) {
-    ldout(store->ctx(), 1) << "ERROR: failed to read sub config: ret=" << ret << dendl;
+    ldpp_dout(dpp, 1) << "ERROR: failed to read sub config: ret=" << ret << dendl;
     return ret;
   }
 
@@ -920,7 +920,7 @@ int RGWPubSub::SubWithEvents<EventType>::remove_event(const string& event_id)
   string tenant;
   ret = store->getRados()->get_bucket_info(store->svc(), tenant, sub_conf.dest.bucket_name, bucket_info, nullptr, null_yield, nullptr);
   if (ret < 0) {
-    ldout(store->ctx(), 1) << "ERROR: failed to read bucket info for events bucket: bucket=" << sub_conf.dest.bucket_name << " ret=" << ret << dendl;
+    ldpp_dout(dpp, 1) << "ERROR: failed to read bucket info for events bucket: bucket=" << sub_conf.dest.bucket_name << " ret=" << ret << dendl;
     return ret;
   }
 
@@ -937,9 +937,9 @@ int RGWPubSub::SubWithEvents<EventType>::remove_event(const string& event_id)
   del_op.params.bucket_owner = bucket_info.owner;
   del_op.params.versioning_status = bucket_info.versioning_status();
 
-  ret = del_op.delete_obj(null_yield);
+  ret = del_op.delete_obj(null_yield, dpp);
   if (ret < 0) {
-    ldout(store->ctx(), 1) << "ERROR: failed to remove event (obj=" << obj << "): ret=" << ret << dendl;
+    ldpp_dout(dpp, 1) << "ERROR: failed to remove event (obj=" << obj << "): ret=" << ret << dendl;
   }
   return 0;
 }

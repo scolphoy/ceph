@@ -30,6 +30,15 @@ cdef nogil:
     cdef struct ceph_dir_result:
         int dummy
 
+    cdef struct snap_metadata:
+        const char *key
+        const char *value
+
+    cdef struct snap_info:
+        uint64_t id
+        size_t nr_snap_metadata
+        snap_metadata *snap_metadata
+
     ctypedef void* rados_t
 
     const char *ceph_version(int *major, int *minor, int *patch):
@@ -138,6 +147,14 @@ cdef nogil:
         pass
     int ceph_mkdir(ceph_mount_info *cmount, const char *path, mode_t mode):
         pass
+    int ceph_mksnap(ceph_mount_info *cmount, const char *path, const char *name, mode_t mode, snap_metadata *snap_metadata, size_t nr_snap_metadata):
+        pass
+    int ceph_rmsnap(ceph_mount_info *cmount, const char *path, const char *name):
+        pass
+    int ceph_get_snap_info(ceph_mount_info *cmount, const char *path, snap_info *snap_info):
+        pass
+    void ceph_free_snap_info_buffer(snap_info *snap_info):
+        pass
     int ceph_mkdirs(ceph_mount_info *cmount, const char *path, mode_t mode):
         pass
     int ceph_closedir(ceph_mount_info *cmount, ceph_dir_result *dirp):
@@ -171,6 +188,8 @@ cdef nogil:
     int ceph_fallocate(ceph_mount_info *cmount, int fd, int mode, int64_t offset, int64_t length):
         pass
     int ceph_chmod(ceph_mount_info *cmount, const char *path, mode_t mode):
+        pass
+    int ceph_lchmod(ceph_mount_info *cmount, const char *path, mode_t mode):
         pass
     int ceph_fchmod(ceph_mount_info *cmount, int fd, mode_t mode):
         pass

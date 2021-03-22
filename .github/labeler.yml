@@ -62,11 +62,13 @@ common:
 
 cephadm:
   - doc/cephadm/**
-  - doc/dev/cephadm.rst
+  - doc/dev/cephadm/**
   - doc/man/8/cephadm.rst
   - qa/suites/rados/cephadm/**
   - qa/tasks/cephadm.py
+  - qa/tasks/cephadm_cases
   - qa/tasks/mgr/test_cephadm_orchestrator.py
+  - qa/tasks/mgr/test_orchestrator_cli.py
   - qa/workunits/cephadm/**
   - src/cephadm/**
   - src/pybind/mgr/cephadm/**
@@ -162,7 +164,8 @@ cephfs:
   - src/include/fs_types.h
   - src/libcephfs.cc
   - src/mds/**
-  - src/pybind/ceph_volume_client.py
+  - src/mon/MDSMonitor.*
+  - src/mon/FSCommands.*
   - src/pybind/cephfs/**
   - src/pybind/mgr/mds_autoscaler/**
   - src/pybind/mgr/status/**

@@ -1,10 +1,10 @@
 import fileinput
+import logging
 import os
 import shutil
 import sys
-
 import yaml
-
+import sphinx.util
 
 top_level = \
     os.path.dirname(
@@ -44,6 +44,20 @@ pygments_style = 'sphinx'
 
 # HTML output options
 html_theme = 'ceph'
+html_theme_options = {
+    'logo_only': True,
+    'display_version': False,
+    'prev_next_buttons_location': 'bottom',
+    'style_external_links': False,
+    'vcs_pageview_mode': '',
+    'style_nav_header_background': '#eee',
+    # Toc options
+    'collapse_navigation': True,
+    'sticky_navigation': True,
+    'navigation_depth': 4,
+    'includehidden': True,
+    'titles_only': False
+}
 html_theme_path = ['_themes']
 html_title = "Ceph Documentation"
 html_logo = 'logo.png'
@@ -102,6 +116,7 @@ extensions = [
     'sphinx_autodoc_typehints',
     'sphinx_substitution_extensions',
     'breathe',
+    'ceph_commands',
     'ceph_releases',
     'sphinxcontrib.openapi'
     ]
@@ -144,13 +159,6 @@ breathe_doxygen_config_options = {
     'MACRO_EXPANSION': 'YES',
     'PREDEFINED': 'CEPH_RADOS_API= '
 }
-
-# edit_on_github options
-# the docs are rendered with github links pointing to master. the javascript
-# snippet in _static/ceph.js rewrites the edit links when a page is loaded, to
-# point to the correct branch.
-edit_on_github_project = 'ceph/ceph'
-edit_on_github_branch = 'master'
 
 # graphviz options
 graphviz_output_format = 'svg'
@@ -212,10 +220,13 @@ for c in pybinds:
     if pybind not in sys.path:
         sys.path.insert(0, pybind)
 
+# openapi
+openapi_logger = sphinx.util.logging.getLogger('sphinxcontrib.openapi.openapi30')
+openapi_logger.setLevel(logging.WARNING)
+
 
 # handles edit-on-github and old version warning display
 def setup(app):
-    app.add_js_file('js/ceph.js')
     if ditaa is None:
         # add "ditaa" as an alias of "diagram"
         from plantweb.directive import DiagramDirective

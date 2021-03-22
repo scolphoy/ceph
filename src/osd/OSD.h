@@ -85,9 +85,7 @@ struct C_OpenPGs;
 class LogChannel;
 
 class MOSDPGCreate2;
-class MOSDPGQuery;
 class MOSDPGNotify;
-class MOSDPGInfo;
 class MOSDPGRemove;
 class MOSDForceRecovery;
 class MMonGetPurgedSnapsReply;
@@ -199,8 +197,6 @@ public:
   /// gets ref to next_osdmap and registers the epoch as reserved
   OSDMapRef get_nextmap_reserved() {
     std::lock_guard l(pre_publish_lock);
-    if (!next_osdmap)
-      return OSDMapRef();
     epoch_t e = next_osdmap->get_epoch();
     std::map<epoch_t, unsigned>::iterator i =
       map_reservations.insert(std::make_pair(e, 0)).first;
@@ -235,8 +231,6 @@ public:
   }
   OSDMapRef get_next_osdmap() {
     std::lock_guard l(pre_publish_lock);
-    if (!next_osdmap)
-      return OSDMapRef();
     return next_osdmap;
   }
 
@@ -1426,7 +1420,7 @@ private:
     std::vector<uint32_t> hb_front_min;
     std::vector<uint32_t> hb_front_max;
 
-    bool is_stale(utime_t stale) {
+    bool is_stale(utime_t stale) const {
       if (ping_history.empty()) {
         return false;
       }
@@ -1434,7 +1428,7 @@ private:
       return oldest_deadline <= stale;
     }
 
-    bool is_unhealthy(utime_t now) {
+    bool is_unhealthy(utime_t now) const {
       if (ping_history.empty()) {
         /// we haven't sent a ping yet or we have got all replies,
         /// in either way we are safe and healthy for now
@@ -1445,7 +1439,7 @@ private:
       return now > oldest_deadline;
     }
 
-    bool is_healthy(utime_t now) {
+    bool is_healthy(utime_t now) const {
       if (last_rx_front == utime_t() || last_rx_back == utime_t()) {
         // only declare to be healthy until we have received the first
         // replies from both front/back connections
@@ -1899,7 +1893,6 @@ protected:
   double scrub_sleep_time(bool must_scrub);
 
   // -- generic pg peering --
-  PeeringCtx create_context();
   void dispatch_context(PeeringCtx &ctx, PG *pg, OSDMapRef curmap,
                         ThreadPool::TPHandle *handle = NULL);
 
@@ -1923,11 +1916,9 @@ protected:
 				 bool is_fast_dispatch);
 
   void handle_fast_pg_create(MOSDPGCreate2 *m);
-  void handle_fast_pg_query(MOSDPGQuery *m);
   void handle_pg_query_nopg(const MQuery& q);
   void handle_fast_pg_notify(MOSDPGNotify *m);
   void handle_pg_notify_nopg(const MNotifyRec& q);
-  void handle_fast_pg_info(MOSDPGInfo *m);
   void handle_fast_pg_remove(MOSDPGRemove *m);
 
 public:

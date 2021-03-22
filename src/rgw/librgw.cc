@@ -123,7 +123,8 @@ namespace rgw {
 	RGWLibFS* fs = iter->first->ref();
 	uniq.unlock();
 	fs->gc();
-	fs->update_user();
+        const DoutPrefix dp(cct, dout_subsys, "librgw: ");
+	fs->update_user(&dp);
 	fs->rele();
 	uniq.lock();
 	if (cur_gen != gen)
@@ -205,7 +206,7 @@ namespace rgw {
      */
     RGWOp *op = (req->op) ? req->op : dynamic_cast<RGWOp*>(req);
     if (! op) {
-      dout(1) << "failed to derive cognate RGWOp (invalid op?)" << dendl;
+      ldpp_dout(op, 1) << "failed to derive cognate RGWOp (invalid op?)" << dendl;
       return -EINVAL;
     }
 
@@ -235,13 +236,10 @@ namespace rgw {
 
     RGWObjectCtx rados_ctx(store, s); // XXX holds std::map
 
-    auto sysobj_ctx = store->svc()->sysobj->init_obj_ctx();
-    s->sysobj_ctx = &sysobj_ctx;
-
     /* XXX and -then- stash req_state pointers everywhere they are needed */
     ret = req->init(rgw_env, &rados_ctx, io, s);
     if (ret < 0) {
-      dout(10) << "failed to initialize request" << dendl;
+      ldpp_dout(op, 10) << "failed to initialize request" << dendl;
       abort_req(s, op, ret);
       goto done;
     }
@@ -301,9 +299,9 @@ namespace rgw {
       ret = op->verify_permission(null_yield);
       if (ret < 0) {
 	if (s->system_request) {
-	  dout(2) << "overriding permissions due to system operation" << dendl;
+	  ldpp_dout(op, 2) << "overriding permissions due to system operation" << dendl;
 	} else if (s->auth.identity->is_admin_of(s->user->get_id())) {
-	  dout(2) << "overriding permissions due to admin operation" << dendl;
+	  ldpp_dout(op, 2) << "overriding permissions due to admin operation" << dendl;
 	} else {
 	  abort_req(s, op, ret);
 	  goto done;
@@ -335,7 +333,7 @@ namespace rgw {
               << e.what() << dendl;
     }
     if (should_log) {
-      rgw_log_op(store->getRados(), nullptr /* !rest */, s,
+      rgw_log_op(store, nullptr /* !rest */, s,
 		 (op ? op->name() : "unknown"), olog);
     }
 
@@ -343,7 +341,7 @@ namespace rgw {
 
     ldpp_dout(s, 2) << "http status=" << http_ret << dendl;
 
-    dout(1) << "====== " << __func__
+    ldpp_dout(op, 1) << "====== " << __func__
 	    << " req done req=" << hex << req << dec << " http_status="
 	    << http_ret
 	    << " ======" << dendl;
@@ -366,7 +364,7 @@ namespace rgw {
      */
     RGWOp *op = (req->op) ? req->op : dynamic_cast<RGWOp*>(req);
     if (! op) {
-      dout(1) << "failed to derive cognate RGWOp (invalid op?)" << dendl;
+      ldpp_dout(op, 1) << "failed to derive cognate RGWOp (invalid op?)" << dendl;
       return -EINVAL;
     }
 
@@ -379,7 +377,7 @@ namespace rgw {
 
     int ret = req->init(rgw_env, &rados_ctx, &io_ctx, s);
     if (ret < 0) {
-      dout(10) << "failed to initialize request" << dendl;
+      ldpp_dout(op, 10) << "failed to initialize request" << dendl;
       abort_req(s, op, ret);
       goto done;
     }
@@ -433,9 +431,9 @@ namespace rgw {
     ret = op->verify_permission(null_yield);
     if (ret < 0) {
       if (s->system_request) {
-	dout(2) << "overriding permissions due to system operation" << dendl;
+	ldpp_dout(op, 2) << "overriding permissions due to system operation" << dendl;
       } else if (s->auth.identity->is_admin_of(s->user->get_id())) {
-	dout(2) << "overriding permissions due to admin operation" << dendl;
+	ldpp_dout(op, 2) << "overriding permissions due to admin operation" << dendl;
       } else {
 	abort_req(s, op, ret);
 	goto done;
@@ -460,14 +458,14 @@ namespace rgw {
   {
     RGWOp *op = (req->op) ? req->op : dynamic_cast<RGWOp*>(req);
     if (! op) {
-      dout(1) << "failed to derive cognate RGWOp (invalid op?)" << dendl;
+      ldpp_dout(op, 1) << "failed to derive cognate RGWOp (invalid op?)" << dendl;
       return -EINVAL;
     }
 
     int ret = req->exec_finish();
     int op_ret = op->get_ret();
 
-    dout(1) << "====== " << __func__
+    ldpp_dout(op, 1) << "====== " << __func__
 	    << " finishing continued request req=" << hex << req << dec
 	    << " op status=" << op_ret
 	    << " ======" << dendl;
@@ -537,7 +535,9 @@ namespace rgw {
       g_conf()->rgw_run_sync_thread &&
       g_conf()->rgw_nfs_run_sync_thread;
 
-    store = RGWStoreManager::get_storage(g_ceph_context,
+    const DoutPrefix dp(cct.get(), dout_subsys, "librgw: ");
+    store = RGWStoreManager::get_storage(&dp, g_ceph_context,
+					 "rados",
 					 run_gc,
 					 run_lc,
 					 run_quota,
@@ -556,7 +556,7 @@ namespace rgw {
 
     r = rgw_perf_start(g_ceph_context);
 
-    rgw_rest_init(g_ceph_context, store->svc()->zone->get_zonegroup());
+    rgw_rest_init(g_ceph_context, store->get_zone()->get_zonegroup());
 
     mutex.lock();
     init_timer.cancel_all_events();
@@ -579,7 +579,7 @@ namespace rgw {
     ldh->init();
     ldh->bind();
 
-    rgw_log_usage_init(g_ceph_context, store->getRados());
+    rgw_log_usage_init(g_ceph_context, store);
 
     // XXX ex-RGWRESTMgr_lib, mgr->set_logging(true)
 
@@ -611,7 +611,7 @@ namespace rgw {
 
     fe->run();
 
-    r = store->getRados()->register_to_service_map("rgw-nfs", service_map_meta);
+    r = store->register_to_service_map("rgw-nfs", service_map_meta);
     if (r < 0) {
       derr << "ERROR: failed to register to service map: " << cpp_strerror(-r) << dendl;
       /* ignore error */
@@ -654,22 +654,27 @@ namespace rgw {
     return 0;
   } /* RGWLib::stop() */
 
-  int RGWLibIO::set_uid(rgw::sal::RGWRadosStore *store, const rgw_user& uid)
+  int RGWLibIO::set_uid(rgw::sal::RGWStore *store, const rgw_user& uid)
   {
-    int ret = store->ctl()->user->get_info_by_uid(uid, &user_info, null_yield);
+    const DoutPrefix dp(store->ctx(), dout_subsys, "librgw: ");
+    std::unique_ptr<rgw::sal::RGWUser> user = store->get_user(uid);
+    /* object exists, but policy is broken */
+    int ret = user->load_by_id(&dp, null_yield);
     if (ret < 0) {
       derr << "ERROR: failed reading user info: uid=" << uid << " ret="
 	   << ret << dendl;
     }
+    user_info = user->get_info();
     return ret;
   }
 
   int RGWLibRequest::read_permissions(RGWOp* op, optional_yield y) {
     /* bucket and object ops */
+    const DoutPrefix dp(store->ctx(), dout_subsys, "librgw: ");
     int ret =
-      rgw_build_bucket_policies(rgwlib.get_store(), get_state(), y);
+      rgw_build_bucket_policies(&dp, rgwlib.get_store(), get_state(), y);
     if (ret < 0) {
-      ldout(get_state()->cct, 10) << "read_permissions (bucket policy) on "
+      ldpp_dout(&dp, 10) << "read_permissions (bucket policy) on "
 				  << get_state()->bucket << ":"
 				  << get_state()->object
 				  << " only_bucket=" << only_bucket()
@@ -678,10 +683,10 @@ namespace rgw {
 	ret = -EACCES;
     } else if (! only_bucket()) {
       /* object ops */
-      ret = rgw_build_object_policies(rgwlib.get_store(), get_state(),
+      ret = rgw_build_object_policies(&dp, rgwlib.get_store(), get_state(),
 				      op->prefetch_data(), y);
       if (ret < 0) {
-	ldout(get_state()->cct, 10) << "read_permissions (object policy) on"
+	ldpp_dout(&dp, 10) << "read_permissions (object policy) on"
 				    << get_state()->bucket << ":"
 				    << get_state()->object
 				    << " ret=" << ret << dendl;

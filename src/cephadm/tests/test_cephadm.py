@@ -1,11 +1,14 @@
 # type: ignore
+from typing import List, Optional
 import mock
-from mock import patch
+from mock import patch, call
 import os
 import sys
 import unittest
 import threading
 import time
+import errno
+import socket
 from http.server import HTTPServer
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
@@ -19,6 +22,113 @@ with patch('builtins.open', create=True):
     cd = SourceFileLoader('cephadm', 'cephadm').load_module()
 
 class TestCephAdm(object):
+
+    def test_docker_unit_file(self):
+        ctx = mock.Mock()
+        ctx.container_path = '/usr/bin/docker'
+        r = cd.get_unit_file(ctx, '9b9d7609-f4d5-4aba-94c8-effa764d96c9')
+        assert 'Requires=docker.service' in r
+        ctx.container_path = '/usr/sbin/podman'
+        r = cd.get_unit_file(ctx, '9b9d7609-f4d5-4aba-94c8-effa764d96c9')
+        assert 'Requires=docker.service' not in r
+
+    @mock.patch('cephadm.logger')
+    def test_attempt_bind(self, logger):
+        ctx = None
+        address = None
+        port = 0
+
+        def os_error(errno):
+            _os_error = OSError()
+            _os_error.errno = errno
+            return _os_error
+
+        for side_effect, expected_exception in (
+            (os_error(errno.EADDRINUSE), cd.PortOccupiedError),
+            (os_error(errno.EAFNOSUPPORT), OSError),
+            (os_error(errno.EADDRNOTAVAIL), OSError),
+            (None, None),
+        ):
+            _socket = mock.Mock()
+            _socket.bind.side_effect = side_effect
+            try:
+                cd.attempt_bind(ctx, _socket, address, port)
+            except Exception as e:
+                assert isinstance(e, expected_exception)
+            else:
+                if expected_exception is not None:
+                    assert False
+
+    @mock.patch('cephadm.attempt_bind')
+    @mock.patch('cephadm.logger')
+    def test_port_in_use(self, logger, attempt_bind):
+        empty_ctx = None
+
+        assert cd.port_in_use(empty_ctx, 9100) == False
+
+        attempt_bind.side_effect = cd.PortOccupiedError('msg')
+        assert cd.port_in_use(empty_ctx, 9100) == True
+
+        os_error = OSError()
+        os_error.errno = errno.EADDRNOTAVAIL
+        attempt_bind.side_effect = os_error
+        assert cd.port_in_use(empty_ctx, 9100) == False
+
+        os_error = OSError()
+        os_error.errno = errno.EAFNOSUPPORT
+        attempt_bind.side_effect = os_error
+        assert cd.port_in_use(empty_ctx, 9100) == False
+
+    @mock.patch('socket.socket')
+    @mock.patch('cephadm.logger')
+    def test_check_ip_port_success(self, logger, _socket):
+        ctx = mock.Mock()
+        ctx.skip_ping_check = False  # enables executing port check with `check_ip_port`
+
+        for address, address_family in (
+            ('0.0.0.0', socket.AF_INET),
+            ('::', socket.AF_INET6),
+        ):
+            try:
+                cd.check_ip_port(ctx, address, 9100)
+            except:
+                assert False
+            else:
+                assert _socket.call_args == call(address_family, socket.SOCK_STREAM)
+
+    @mock.patch('socket.socket')
+    @mock.patch('cephadm.logger')
+    def test_check_ip_port_failure(self, logger, _socket):
+        ctx = mock.Mock()
+        ctx.skip_ping_check = False  # enables executing port check with `check_ip_port`
+
+        def os_error(errno):
+            _os_error = OSError()
+            _os_error.errno = errno
+            return _os_error
+
+        for address, address_family in (
+            ('0.0.0.0', socket.AF_INET),
+            ('::', socket.AF_INET6),
+        ):
+            for side_effect, expected_exception in (
+                (os_error(errno.EADDRINUSE), cd.PortOccupiedError),
+                (os_error(errno.EADDRNOTAVAIL), OSError),
+                (os_error(errno.EAFNOSUPPORT), OSError),
+                (None, None),
+            ):
+                mock_socket_obj = mock.Mock()
+                mock_socket_obj.bind.side_effect = side_effect
+                _socket.return_value = mock_socket_obj
+                try:
+                    cd.check_ip_port(ctx, address, 9100)
+                except Exception as e:
+                    assert isinstance(e, expected_exception)
+                else:
+                    if side_effect is not None:
+                        assert False
+
+
     def test_is_not_fsid(self):
         assert not cd.is_fsid('no-uuid')
 
@@ -204,32 +314,38 @@ default via fe80::2480:28ec:5097:3fe2 dev wlp2s0 proto ra metric 20600 pref medi
 
         # test normal valid login with url, username and password specified
         call_throws.return_value = '', '', 0
-        args = cd._parse_args(['registry-login', '--registry-url', 'sample-url', '--registry-username', 'sample-user', '--registry-password', 'sample-pass'])
-        cd.args = args
-        retval = cd.command_registry_login()
+        ctx: Optional[cd.CephadmContext] = cd.cephadm_init_ctx(
+            ['registry-login', '--registry-url', 'sample-url',
+            '--registry-username', 'sample-user', '--registry-password',
+            'sample-pass'])
+        assert ctx
+        retval = cd.command_registry_login(ctx)
         assert retval == 0
 
         # test bad login attempt with invalid arguments given
-        args = cd._parse_args(['registry-login', '--registry-url', 'bad-args-url'])
-        cd.args = args
+        ctx: Optional[cd.CephadmContext] = cd.cephadm_init_ctx(
+            ['registry-login', '--registry-url', 'bad-args-url'])
+        assert ctx
         with pytest.raises(Exception) as e:
-            assert cd.command_registry_login()
+            assert cd.command_registry_login(ctx)
         assert str(e.value) == ('Invalid custom registry arguments received. To login to a custom registry include '
                                 '--registry-url, --registry-username and --registry-password options or --registry-json option')
 
         # test normal valid login with json file
         get_parm.return_value = {"url": "sample-url", "username": "sample-username", "password": "sample-password"}
-        args = cd._parse_args(['registry-login', '--registry-json', 'sample-json'])
-        cd.args = args
-        retval = cd.command_registry_login()
+        ctx: Optional[cd.CephadmContext] = cd.cephadm_init_ctx(
+            ['registry-login', '--registry-json', 'sample-json'])
+        assert ctx
+        retval = cd.command_registry_login(ctx)
         assert retval == 0
 
         # test bad login attempt with bad json file
         get_parm.return_value = {"bad-json": "bad-json"}
-        args = cd._parse_args(['registry-login', '--registry-json', 'sample-json'])
-        cd.args = args
+        ctx: Optional[cd.CephadmContext] =  cd.cephadm_init_ctx(
+            ['registry-login', '--registry-json', 'sample-json'])
+        assert ctx
         with pytest.raises(Exception) as e:
-            assert cd.command_registry_login()
+            assert cd.command_registry_login(ctx)
         assert str(e.value) == ("json provided for custom registry login did not include all necessary fields. "
                         "Please setup json file as\n"
                         "{\n"
@@ -240,28 +356,44 @@ default via fe80::2480:28ec:5097:3fe2 dev wlp2s0 proto ra metric 20600 pref medi
 
         # test login attempt with valid arguments where login command fails
         call_throws.side_effect = Exception
-        args = cd._parse_args(['registry-login', '--registry-url', 'sample-url', '--registry-username', 'sample-user', '--registry-password', 'sample-pass'])
-        cd.args = args
+        ctx: Optional[cd.CephadmContext] = cd.cephadm_init_ctx(
+            ['registry-login', '--registry-url', 'sample-url',
+            '--registry-username', 'sample-user', '--registry-password',
+            'sample-pass'])
+        assert ctx
         with pytest.raises(Exception) as e:
-            cd.command_registry_login()
+            cd.command_registry_login(ctx)
         assert str(e.value) == "Failed to login to custom registry @ sample-url as sample-user with given password"
 
     def test_get_image_info_from_inspect(self):
         # podman
-        out = """204a01f9b0b6710dd0c0af7f37ce7139c47ff0f0105d778d7104c69282dfbbf1,["docker.io/ceph/ceph@sha256:1cc9b824e1b076cdff52a9aa3f0cc8557d879fb2fbbba0cafed970aca59a3992"]"""
+        out = """204a01f9b0b6710dd0c0af7f37ce7139c47ff0f0105d778d7104c69282dfbbf1,[docker.io/ceph/ceph@sha256:1cc9b824e1b076cdff52a9aa3f0cc8557d879fb2fbbba0cafed970aca59a3992]"""
         r = cd.get_image_info_from_inspect(out, 'registry/ceph/ceph:latest')
+        print(r)
         assert r == {
             'image_id': '204a01f9b0b6710dd0c0af7f37ce7139c47ff0f0105d778d7104c69282dfbbf1',
-            'repo_digest': 'docker.io/ceph/ceph@sha256:1cc9b824e1b076cdff52a9aa3f0cc8557d879fb2fbbba0cafed970aca59a3992'
+            'repo_digests': ['docker.io/ceph/ceph@sha256:1cc9b824e1b076cdff52a9aa3f0cc8557d879fb2fbbba0cafed970aca59a3992']
         }
 
         # docker
-        out = """sha256:16f4549cf7a8f112bbebf7946749e961fbbd1b0838627fe619aab16bc17ce552,["quay.ceph.io/ceph-ci/ceph@sha256:4e13da36c1bd6780b312a985410ae678984c37e6a9493a74c87e4a50b9bda41f"]"""
+        out = """sha256:16f4549cf7a8f112bbebf7946749e961fbbd1b0838627fe619aab16bc17ce552,[quay.ceph.io/ceph-ci/ceph@sha256:4e13da36c1bd6780b312a985410ae678984c37e6a9493a74c87e4a50b9bda41f]"""
         r = cd.get_image_info_from_inspect(out, 'registry/ceph/ceph:latest')
         assert r == {
             'image_id': '16f4549cf7a8f112bbebf7946749e961fbbd1b0838627fe619aab16bc17ce552',
-            'repo_digest': 'quay.ceph.io/ceph-ci/ceph@sha256:4e13da36c1bd6780b312a985410ae678984c37e6a9493a74c87e4a50b9bda41f'
+            'repo_digests': ['quay.ceph.io/ceph-ci/ceph@sha256:4e13da36c1bd6780b312a985410ae678984c37e6a9493a74c87e4a50b9bda41f']
         }
+
+        # multiple digests (podman)
+        out = """e935122ab143a64d92ed1fbb27d030cf6e2f0258207be1baf1b509c466aeeb42,[docker.io/prom/prometheus@sha256:e4ca62c0d62f3e886e684806dfe9d4e0cda60d54986898173c1083856cfda0f4 docker.io/prom/prometheus@sha256:efd99a6be65885c07c559679a0df4ec709604bcdd8cd83f0d00a1a683b28fb6a]"""
+        r = cd.get_image_info_from_inspect(out, 'registry/prom/prometheus:latest')
+        assert r == {
+            'image_id': 'e935122ab143a64d92ed1fbb27d030cf6e2f0258207be1baf1b509c466aeeb42',
+            'repo_digests': [
+                'docker.io/prom/prometheus@sha256:e4ca62c0d62f3e886e684806dfe9d4e0cda60d54986898173c1083856cfda0f4',
+                'docker.io/prom/prometheus@sha256:efd99a6be65885c07c559679a0df4ec709604bcdd8cd83f0d00a1a683b28fb6a',
+            ]
+        }
+
 
     def test_dict_get(self):
         result = cd.dict_get({'a': 1}, 'a', require=True)
@@ -381,7 +513,7 @@ class TestCustomContainer(unittest.TestCase):
 
 class TestCephadmExporter(object):
     exporter: cd.CephadmDaemon
-    files_created = []
+    files_created: List[str] = []
     crt = """-----BEGIN CERTIFICATE-----
 MIIC1zCCAb8CEFHoZE2MfUVzo53fzzBKAT0wDQYJKoZIhvcNAQENBQAwKjENMAsG
 A1UECgwEQ2VwaDEZMBcGA1UECwwQY2VwaGFkbS1leHBvcnRlcjAeFw0yMDExMjUy
@@ -487,13 +619,10 @@ iMN28C2bKGao5UHvdER1rGy7
         assert exporter.unit_run
         lines = exporter.unit_run.split('\n')
         assert len(lines) == 2
-        assert "/var/lib/ceph/foobar/cephadm exporter --fsid foobar --id test --port 9443 &" in lines[1]
+        assert "cephadm exporter --fsid foobar --id test --port 9443 &" in lines[1]
 
     def test_binary_path(self, exporter):
-        # fsid = foobar
-        args = cd._parse_args([])
-        cd.args = args
-        assert exporter.binary_path == "/var/lib/ceph/foobar/cephadm"
+        assert os.path.isfile(exporter.binary_path)
 
     def test_systemd_unit(self, exporter):
         assert exporter.unit_file
@@ -641,3 +770,94 @@ iMN28C2bKGao5UHvdER1rGy7
         req=Request("http://localhost:9443/v1/metadata/health",headers=hdrs, method="PATCH")
         with pytest.raises(HTTPError, match=r"HTTP Error 501: .*") as e:
             urlopen(req)
+
+    def test_ipv4_subnet(self):
+        rc, v, msg = cd.check_subnet('192.168.1.0/24')
+        assert rc == 0 and v[0] == 4
+    
+    def test_ipv4_subnet_list(self):
+        rc, v, msg = cd.check_subnet('192.168.1.0/24,10.90.90.0/24')
+        assert rc == 0 and not msg
+    
+    def test_ipv4_subnet_badlist(self):
+        rc, v, msg = cd.check_subnet('192.168.1.0/24,192.168.1.1')
+        assert rc == 1 and msg
+
+    def test_ipv4_subnet_mixed(self):
+        rc, v, msg = cd.check_subnet('192.168.100.0/24,fe80::/64')
+        assert rc == 0 and v == [4,6]
+
+    def test_ipv6_subnet(self):
+        rc, v, msg = cd.check_subnet('fe80::/64')
+        assert rc == 0 and v[0] == 6
+    
+    def test_subnet_mask_missing(self):
+        rc, v, msg = cd.check_subnet('192.168.1.58')
+        assert rc == 1 and msg
+    
+    def test_subnet_mask_junk(self):
+        rc, v, msg = cd.check_subnet('wah')
+        assert rc == 1 and msg
+
+
+class TestMaintenance:
+    systemd_target = "ceph.00000000-0000-0000-0000-000000c0ffee.target"
+
+    def test_systemd_target_OK(self, tmp_path):
+        base = tmp_path 
+        wants = base / "ceph.target.wants"
+        wants.mkdir()
+        target = wants / TestMaintenance.systemd_target
+        target.touch()
+        cd.UNIT_DIR = str(base)
+
+        assert cd.systemd_target_state(target.name)
+
+    def test_systemd_target_NOTOK(self, tmp_path):
+        base = tmp_path 
+        cd.UNIT_DIR = str(base)
+        assert not cd.systemd_target_state(TestMaintenance.systemd_target)
+
+    def test_parser_OK(self):
+        args = cd._parse_args(['host-maintenance', 'enter'])
+        assert args.maintenance_action == 'enter'
+
+    def test_parser_BAD(self):
+        with pytest.raises(SystemExit):
+            cd._parse_args(['host-maintenance', 'wah'])
+
+
+class TestMonitoring(object):
+    @mock.patch('cephadm.call')
+    def test_get_version_alertmanager(self, _call):
+        ctx = mock.Mock()
+        daemon_type = 'alertmanager'
+
+        # binary `prometheus`
+        _call.return_value = '', '{}, version 0.16.1'.format(daemon_type), 0
+        version = cd.Monitoring.get_version(ctx, 'container_id', daemon_type)
+        assert version == '0.16.1'
+
+        # binary `prometheus-alertmanager`
+        _call.side_effect = (
+            ('', '', 1),
+            ('', '{}, version 0.16.1'.format(daemon_type), 0),
+        )
+        version = cd.Monitoring.get_version(ctx, 'container_id', daemon_type)
+        assert version == '0.16.1'
+
+    @mock.patch('cephadm.call')
+    def test_get_version_prometheus(self, _call):
+        ctx = mock.Mock()
+        daemon_type = 'prometheus'
+        _call.return_value = '', '{}, version 0.16.1'.format(daemon_type), 0
+        version = cd.Monitoring.get_version(ctx, 'container_id', daemon_type)
+        assert version == '0.16.1'
+
+    @mock.patch('cephadm.call')
+    def test_get_version_node_exporter(self, _call):
+        ctx = mock.Mock()
+        daemon_type = 'node-exporter'
+        _call.return_value = '', '{}, version 0.16.1'.format(daemon_type.replace('-', '_')), 0
+        version = cd.Monitoring.get_version(ctx, 'container_id', daemon_type)
+        assert version == '0.16.1'

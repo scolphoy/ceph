@@ -77,6 +77,11 @@ life for the counter. If the MDS is continually removing items from its cache,
 it will reach a steady state of ``-ln(0.5)/rate*threshold`` items removed per
 second.
 
+.. note:: Increasing the value of the confguration setting
+          ``mds_cache_trim_decay_rate`` leads to the MDS spending less time
+          trimming the cache. To increase the cache trimming rate, set a lower
+          value.
+
 The defaults are conservative and may need to be changed for production MDS with
 large cache sizes.
 
@@ -131,6 +136,47 @@ Some workloads and client behaviors may require faster recall of client state
 to keep up with capability acquisition. It is recommended to increase the above
 counters as needed to resolve any slow recall warnings in the cluster health
 state.
+
+
+MDS Cap Acquisition Throttle
+----------------------------
+
+A trivial "find" command on a large directory hierarchy will cause the client
+to receive caps significantly faster than it will release. The MDS will try
+to have the client reduce its caps below the ``mds_max_caps_per_client`` limit
+but the recall throttles prevent it from catching up to the pace of acquisition.
+So the readdir is throttled to control cap acquisition via the following
+configurations:
+
+
+The threshold and decay rate for the readdir cap acquisition decay counter::
+
+    mds_session_cap_acquisition_throttle (default: 500K)
+
+and::
+
+    mds_session_cap_acquisition_decay_rate (default: 10 seconds)
+
+The cap acquisition decay counter controls the rate of cap acquisition via
+readdir. The behavior of the decay counter is the same as for cache trimming or
+caps recall. Each readdir call increments the counter by the number of files in
+the result.
+
+The ratio of ``mds_max_caps_per_client`` that client must exceed before readdir
+maybe throttled by cap acquisition throttle::
+
+    mds_session_max_caps_throttle_ratio (default: 1.1)
+
+The timeout in seconds after which a client request is retried due to cap
+acquisition throttling::
+
+    mds_cap_acquisition_throttle_retry_request_timeout (default: 0.5 seconds)
+
+If the number of caps acquired by the client per session is greater than the
+``mds_session_max_caps_throttle_ratio`` and cap acquisition decay counter is
+greater than ``mds_session_cap_acquisition_throttle``, the readdir is throttled.
+The readdir request is retried after ``mds_cap_acquisition_throttle_retry_request_timeout``
+seconds.
 
 
 Session Liveness

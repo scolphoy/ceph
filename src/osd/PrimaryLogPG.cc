@@ -41,6 +41,7 @@
 #include "messages/MOSDRepScrub.h"
 #include "messages/MOSDPGBackfill.h"
 #include "messages/MOSDPGBackfillRemove.h"
+#include "messages/MOSDPGLog.h"
 #include "messages/MOSDPGUpdateLogMissing.h"
 #include "messages/MOSDPGUpdateLogMissingReply.h"
 #include "messages/MCommandReply.h"
@@ -798,11 +799,8 @@ void PrimaryLogPG::maybe_force_recovery()
 
 bool PrimaryLogPG::check_laggy(OpRequestRef& op)
 {
-  if (!HAVE_FEATURE(recovery_state.get_min_upacting_features(),
-		    SERVER_OCTOPUS)) {
-    dout(20) << __func__ << " not all upacting has SERVER_OCTOPUS" << dendl;
-    return true;
-  }
+  assert(HAVE_FEATURE(recovery_state.get_min_upacting_features(),
+		      SERVER_OCTOPUS));
   if (state_test(PG_STATE_WAIT)) {
     dout(10) << __func__ << " PG is WAIT state" << dendl;
   } else if (!state_test(PG_STATE_LAGGY)) {
@@ -833,10 +831,8 @@ bool PrimaryLogPG::check_laggy(OpRequestRef& op)
 
 bool PrimaryLogPG::check_laggy_requeue(OpRequestRef& op)
 {
-  if (!HAVE_FEATURE(recovery_state.get_min_upacting_features(),
-		    SERVER_OCTOPUS)) {
-    return true;
-  }
+  assert(HAVE_FEATURE(recovery_state.get_min_upacting_features(),
+		      SERVER_OCTOPUS));
   if (!state_test(PG_STATE_WAIT) && !state_test(PG_STATE_LAGGY)) {
     return true; // not laggy
   }
@@ -1014,7 +1010,7 @@ void PrimaryLogPG::do_command(
     handle_query_state(f.get());
     f->close_section();
 
-    if (is_primary() && is_active()) {
+    if (is_primary() && is_active() && m_scrubber) {
       m_scrubber->dump(f.get());
     }
 
@@ -1603,7 +1599,7 @@ int PrimaryLogPG::do_scrub_ls(const MOSDOp *m, OSDOp *osd_op)
   if (arg.interval != 0 && arg.interval != info.history.same_interval_since) {
     r = -EAGAIN;
   } else {
-    bool store_queried = m_scrubber->get_store_errors(arg, result);
+    bool store_queried = m_scrubber && m_scrubber->get_store_errors(arg, result);
     if (store_queried) {
       encode(result, osd_op->outdata); 
     } else {
@@ -1613,6 +1609,52 @@ int PrimaryLogPG::do_scrub_ls(const MOSDOp *m, OSDOp *osd_op)
   }
 
   return r;
+}
+
+/**
+ * Grabs locks for OpContext, should be cleaned up in close_op_ctx
+ *
+ * @param ctx [in,out] ctx to get locks for
+ * @return true on success, false if we are queued
+ */
+bool PrimaryLogPG::get_rw_locks(bool write_ordered, OpContext *ctx)
+{
+  /* If head_obc, !obc->obs->exists and we will always take the
+   * snapdir lock *before* the head lock.  Since all callers will do
+   * this (read or write) if we get the first we will be guaranteed
+   * to get the second.
+   */
+  if (write_ordered && ctx->op->may_read()) {
+    ctx->lock_type = RWState::RWEXCL;
+  } else if (write_ordered) {
+    ctx->lock_type = RWState::RWWRITE;
+  } else {
+    ceph_assert(ctx->op->may_read());
+    ctx->lock_type = RWState::RWREAD;
+  }
+
+  if (ctx->head_obc) {
+    ceph_assert(!ctx->obc->obs.exists);
+    if (!ctx->lock_manager.get_lock_type(
+          ctx->lock_type,
+          ctx->head_obc->obs.oi.soid,
+          ctx->head_obc,
+          ctx->op)) {
+      ctx->lock_type = RWState::RWNONE;
+      return false;
+    }
+  }
+  if (ctx->lock_manager.get_lock_type(
+        ctx->lock_type,
+        ctx->obc->obs.oi.soid,
+        ctx->obc,
+        ctx->op)) {
+    return true;
+  } else {
+    ceph_assert(!ctx->head_obc);
+    ctx->lock_type = RWState::RWNONE;
+    return false;
+  }
 }
 
 /**
@@ -1846,6 +1888,10 @@ void PrimaryLogPG::do_request(
 
   case MSG_OSD_SCRUB_RESERVE:
     {
+      if (!m_scrubber) {
+        osd->reply_op_error(op, -EAGAIN);
+        return;
+      }
       auto m = op->get_req<MOSDScrubReserve>();
       switch (m->type) {
       case MOSDScrubReserve::REQUEST:
@@ -2283,6 +2329,9 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   }
 
   if (obc.get() && obc->obs.exists && obc->obs.oi.has_manifest()) {
+    if (recover_adjacent_clones(obc, op)) {
+      return;
+    }
     if (maybe_handle_manifest(op,
 			       write_ordered,
 			       obc))
@@ -3268,28 +3317,26 @@ struct SetManifestFinisher : public PrimaryLogPG::OpFinisher {
 };
 
 struct C_SetManifestRefCountDone : public Context {
-  RefCountCallback* cb;
+  PrimaryLogPGRef pg;
+  PrimaryLogPG::ManifestOpRef mop;
   hobject_t soid;
-  C_SetManifestRefCountDone(
-    RefCountCallback* cb, hobject_t soid) : cb(cb), soid(soid) {}
+  C_SetManifestRefCountDone(PrimaryLogPG *p,
+    PrimaryLogPG::ManifestOpRef mop, hobject_t soid) : 
+    pg(p), mop(mop), soid(soid) {}
   void finish(int r) override {
     if (r == -ECANCELED)
       return;
-    auto pg = cb->ctx->pg;
     std::scoped_lock locker{*pg};
     auto it = pg->manifest_ops.find(soid);
     if (it == pg->manifest_ops.end()) {
       // raced with cancel_manifest_ops
       return;
     }
-    pg->manifest_ops.erase(it);
-    cb->complete(r);
-    cb = nullptr;
-  }
-  ~C_SetManifestRefCountDone() {
-    if (cb) {
-      delete cb;
+    if (it->second->cb) {
+      it->second->cb->complete(r);
     }
+    pg->manifest_ops.erase(it);
+    mop.reset();
   }
 };
 
@@ -3326,10 +3373,86 @@ void PrimaryLogPG::cancel_manifest_ops(bool requeue, vector<ceph_tid_t> *tids)
       tids->push_back(mop->objecter_tid);
       mop->objecter_tid = 0;
     }
-    mop->cb->set_requeue(requeue);
-    mop->cb->complete(-ECANCELED);
+    if (mop->cb) {
+      mop->cb->set_requeue(requeue);
+      mop->cb->complete(-ECANCELED);
+    }
     manifest_ops.erase(p++);
   }
+}
+
+int PrimaryLogPG::get_manifest_ref_count(ObjectContextRef obc, std::string& fp_oid) 
+{
+  int cnt = 0;
+  // head
+  for (auto &p : obc->obs.oi.manifest.chunk_map) {
+    if (p.second.oid.oid.name == fp_oid) {
+      cnt++;
+    }
+  }
+  // snap
+  SnapSet& ss = obc->ssc->snapset;
+  const OSDMapRef& osdmap = get_osdmap();
+  for (vector<snapid_t>::const_reverse_iterator p = ss.clones.rbegin();
+      p != ss.clones.rend();
+      ++p) {
+    object_ref_delta_t refs;
+    ObjectContextRef obc_l = nullptr;
+    ObjectContextRef obc_g = nullptr;
+    hobject_t clone_oid = obc->obs.oi.soid;
+    clone_oid.snap = *p;
+    if (osdmap->in_removed_snaps_queue(info.pgid.pgid.pool(), *p)) {
+      return -EBUSY;
+    }
+    ObjectContextRef clone_obc = get_object_context(clone_oid, false);
+    if (!clone_obc) {
+      break;
+    }
+    get_adjacent_clones(clone_obc, obc_l, obc_g);
+    clone_obc->obs.oi.manifest.calc_refs_to_inc_on_set(
+      obc_g ? &(obc_g->obs.oi.manifest) : nullptr ,
+      nullptr,
+      refs);
+    for (auto p = refs.begin(); p != refs.end(); ++p) {
+      if (p->first.oid.name == fp_oid && p->second > 0) {
+	cnt += p->second;
+      }
+    }
+  }
+
+  return cnt;
+}
+
+bool PrimaryLogPG::recover_adjacent_clones(ObjectContextRef obc, OpRequestRef op)
+{
+  if (!obc->obs.oi.manifest.is_chunked() || !obc->ssc || !obc->ssc->snapset.clones.size()) {
+    return false;
+  }
+
+  const SnapSet& snapset = obc->ssc->snapset;
+  auto s = std::find(snapset.clones.begin(), snapset.clones.end(), obc->obs.oi.soid.snap);
+  auto is_unreadable_snap = [this, obc, &snapset, op](auto iter) -> bool {
+    hobject_t cid = obc->obs.oi.soid;
+    cid.snap = (iter == snapset.clones.end()) ? snapid_t(CEPH_NOSNAP) : *iter;
+    if (is_unreadable_object(cid)) {
+      dout(10) << __func__ << ": clone " << cid
+	       << " is unreadable, waiting" << dendl;
+      wait_for_unreadable_object(cid, op);
+      return true;
+    }
+    return false;
+  };
+  if (s != snapset.clones.begin()) {
+    if (is_unreadable_snap(s - 1)) {
+      return true;
+    }
+  }
+  if (s != snapset.clones.end()) {
+    if (is_unreadable_snap(s + 1)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 ObjectContextRef PrimaryLogPG::get_prev_clone_obc(ObjectContextRef obc)
@@ -3415,12 +3538,12 @@ bool PrimaryLogPG::inc_refcount_by_set(OpContext* ctx, object_manifest_t& set_ch
        * the reference the targe object has prior to update object_manifest in object_info_t.
        * So, call directly refcount_manifest.
        */
-      C_SetManifestRefCountDone* fin = new C_SetManifestRefCountDone(
-			  new RefCountCallback(ctx, osd_op), 
-			  ctx->obs->oi.soid);
+      ManifestOpRef mop = std::make_shared<ManifestOp>(new RefCountCallback(ctx, osd_op));
+      C_SetManifestRefCountDone* fin = new C_SetManifestRefCountDone(this, mop, ctx->obs->oi.soid);
       ceph_tid_t tid = refcount_manifest(ctx->obs->oi.soid, p->first,
-			refcount_t::INCREMENT_REF, fin, std::nullopt);
-      manifest_ops[ctx->obs->oi.soid] = std::make_shared<ManifestOp>(fin->cb, tid);
+					  refcount_t::INCREMENT_REF, fin, std::nullopt);
+      mop->objecter_tid = tid;
+      manifest_ops[ctx->obs->oi.soid] = mop;
       ctx->obc->start_block();
       return true;
     } else if (inc_ref_count < 0) {
@@ -4104,7 +4227,7 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
   // issue replica writes
   ceph_tid_t rep_tid = osd->get_tid();
 
-  RepGather *repop = new_repop(ctx, obc, rep_tid);
+  RepGather *repop = new_repop(ctx, rep_tid);
 
   issue_repop(repop, ctx);
   eval_repop(repop);
@@ -6004,7 +6127,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  result = -EINVAL;
 	  break;
 	}
-	if (pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE) {
+	if (pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE || obs.oi.has_manifest()) {
 	  result = -EINVAL;
 	  break;
 	}
@@ -6037,7 +6160,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  result = -EINVAL;
 	  break;
 	}
-	if (pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE) {
+	if (pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE || obs.oi.has_manifest()) {
 	  result = -EINVAL;
 	  break;
 	}
@@ -6074,7 +6197,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       result = 0;
       {
 	tracepoint(osd, do_osd_op_pre_cache_evict, soid.oid.name.c_str(), soid.snap.val);
-	if (pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE) {
+	if (pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE || obs.oi.has_manifest()) {
 	  result = -EINVAL;
 	  break;
 	}
@@ -6892,12 +7015,12 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  // start
 	  ctx->op_finishers[ctx->current_osd_subop_num].reset(
 	    new SetManifestFinisher(osd_op));
-	  C_SetManifestRefCountDone* fin = new C_SetManifestRefCountDone(
-			      new RefCountCallback(ctx, osd_op), 
-			      soid);
+	  ManifestOpRef mop = std::make_shared<ManifestOp>(new RefCountCallback(ctx, osd_op));
+	  C_SetManifestRefCountDone* fin = new C_SetManifestRefCountDone(this, mop, soid);
 	  ceph_tid_t tid = refcount_manifest(soid, target, 
-			    refcount_t::INCREMENT_REF, fin, std::nullopt);
-	  manifest_ops[soid] = std::make_shared<ManifestOp>(fin->cb, tid);
+					      refcount_t::INCREMENT_REF, fin, std::nullopt);
+	  mop->objecter_tid = tid;
+	  manifest_ops[soid] = mop;
 	  ctx->obc->start_block();
 	  result = -EINPROGRESS;
 	} else {
@@ -7187,14 +7310,13 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  chunk_length += p.second.length;
 	}
 	if (chunk_length == obs.oi.size) {
-	  // truncate
-	  for (auto p : obs.oi.manifest.chunk_map) {
+	  for (auto &p : obs.oi.manifest.chunk_map) {
 	    p.second.set_flag(chunk_info_t::FLAG_MISSING);
 	  }
-	  t->truncate(obs.oi.soid, 0);
-	  ctx->delta_stats.num_bytes -= obs.oi.size;
+	  // punch hole
+	  t->zero(soid, 0, oi.size);
+	  oi.clear_data_digest();
 	  ctx->delta_stats.num_wr++;
-	  oi.size = 0;
 	  ctx->cache_operation = true;
 	}
 	osd->logger->inc(l_osd_tier_evict);
@@ -10111,7 +10233,7 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc)
    * The operations to make dedup chunks are tracked by a ManifestOp.
    * This op will be finished if all the operations are completed.
    */
-  ManifestOpRef mop(std::make_shared<ManifestOp>(nullptr, 0));
+  ManifestOpRef mop(std::make_shared<ManifestOp>(nullptr));
 
   // cdc
   std::map<uint64_t, bufferlist> chunks; 
@@ -10978,7 +11100,7 @@ void PrimaryLogPG::issue_repop(RepGather *repop, OpContext *ctx)
 }
 
 PrimaryLogPG::RepGather *PrimaryLogPG::new_repop(
-  OpContext *ctx, ObjectContextRef obc,
+  OpContext *ctx,
   ceph_tid_t rep_tid)
 {
   if (ctx->op)
@@ -11056,7 +11178,7 @@ PrimaryLogPG::OpContextUPtr PrimaryLogPG::simple_opc_create(ObjectContextRef obc
 
 void PrimaryLogPG::simple_opc_submit(OpContextUPtr ctx)
 {
-  RepGather *repop = new_repop(ctx.get(), ctx->obc, ctx->reqid.tid);
+  RepGather *repop = new_repop(ctx.get(), ctx->reqid.tid);
   dout(20) << __func__ << " " << repop << dendl;
   issue_repop(repop, ctx.get());
   eval_repop(repop);
@@ -12556,8 +12678,6 @@ void PrimaryLogPG::on_change(ObjectStore::Transaction &t)
   requeue_ops(waiting_for_flush);
   requeue_ops(waiting_for_active);
   requeue_ops(waiting_for_readable);
-
-  m_scrubber->clear_scrub_reservations();
 
   vector<ceph_tid_t> tids;
   cancel_copy_ops(is_primary(), &tids);

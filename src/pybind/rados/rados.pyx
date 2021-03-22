@@ -90,6 +90,11 @@ class InvalidArgumentError(Error):
         super(InvalidArgumentError, self).__init__(
             "RADOS invalid argument (%s)" % message, errno)
 
+class ExtendMismatch(Error):
+    def __init__(self, message, errno, offset):
+        super().__init__(
+             "object content does not match (%s)" % message, errno)
+        self.offset = offset
 
 class OSError(Error):
     """ `OSError` class, derived from `Error` """
@@ -261,11 +266,14 @@ cdef make_ex(ret: int, msg: str):
     ret = abs(ret)
     if ret in errno_to_exception:
         return errno_to_exception[ret](msg, errno=ret)
+    elif ret > MAX_ERRNO:
+         offset = ret - MAX_ERRNO
+         return ExtendMismatch(msg, ret, offset)
     else:
         return OSError(msg, errno=ret)
 
 
-def cstr(val, name, encoding="utf-8", opt=False):
+def cstr(val, name, encoding="utf-8", opt=False) -> Optional[bytes]:
     """
     Create a byte string from a Python string
 
@@ -273,7 +281,6 @@ def cstr(val, name, encoding="utf-8", opt=False):
     :param str name: Name of the string parameter, for exceptions
     :param str encoding: Encoding to use
     :param bool opt: If True, None is allowed
-    :rtype: bytes
     :raises: :class:`InvalidArgument`
     """
     if opt and val is None:
@@ -290,12 +297,11 @@ def cstr_list(list_str, name, encoding="utf-8"):
     return [cstr(s, name) for s in list_str]
 
 
-def decode_cstr(val, encoding="utf-8"):
+def decode_cstr(val, encoding="utf-8") -> Optional[str]:
     """
     Decode a byte string into a Python string.
 
     :param bytes val: byte string
-    :rtype: str or None
     """
     if val is None:
         return None
@@ -573,7 +579,7 @@ Rados object in state %s." % self.state)
 
         :param option: which option to read
 
-        :returns: str - value of the option or None
+        :returns: value of the option or None
         :raises: :class:`TypeError`
         """
         self.require_state("configuring", "connected")
@@ -681,8 +687,7 @@ Rados object in state %s." % self.state)
         This tells you total space, space used, space available, and number
         of objects. These are not updated immediately when data is written,
         they are eventually consistent.
-
-        :returns: dict - contains the following keys:
+        :returns: contains the following keys:
 
             - ``kb`` (int) - total space
 
@@ -714,7 +719,7 @@ Rados object in state %s." % self.state)
         :param pool_name: name of the pool to check
 
         :raises: :class:`TypeError`, :class:`Error`
-        :returns: bool - whether the pool exists, false otherwise.
+        :returns: whether the pool exists, false otherwise.
         """
         self.require_state("connected")
 
@@ -738,7 +743,7 @@ Rados object in state %s." % self.state)
         :param pool_name: name of the pool to look up
 
         :raises: :class:`TypeError`, :class:`Error`
-        :returns: int - pool ID, or None if it doesn't exist
+        :returns: pool ID, or None if it doesn't exist
         """
         self.require_state("connected")
         pool_name_raw = cstr(pool_name, 'pool_name')
@@ -754,14 +759,14 @@ Rados object in state %s." % self.state)
         else:
             raise make_ex(ret, "error looking up pool '%s'" % pool_name)
 
-    def pool_reverse_lookup(self, pool_id: int):
+    def pool_reverse_lookup(self, pool_id: int) -> Optional[str]:
         """
         Returns a pool's name based on its ID.
 
         :param pool_id: ID of the pool to look up
 
         :raises: :class:`TypeError`, :class:`Error`
-        :returns: string - pool name, or None if it doesn't exist
+        :returns: pool name, or None if it doesn't exist
         """
         self.require_state("connected")
         cdef:
@@ -875,7 +880,7 @@ Rados object in state %s." % self.state)
         List inconsistent placement groups in the given pool
 
         :param pool_id: ID of the pool in which PGs are listed
-        :returns: list - inconsistent placement groups
+        :returns: inconsistent placement groups
         """
         self.require_state("connected")
         cdef:
@@ -903,7 +908,7 @@ Rados object in state %s." % self.state)
         """
         Gets a list of pool names.
 
-        :returns: list - of pool names.
+        :returns: list of pool names.
         """
         self.require_state("connected")
         cdef:
@@ -929,7 +934,7 @@ Rados object in state %s." % self.state)
         Get the fsid of the cluster as a hexadecimal string.
 
         :raises: :class:`Error`
-        :returns: str - cluster fsid
+        :returns: cluster fsid
         """
         self.require_state("connected")
         cdef:
@@ -961,7 +966,7 @@ Rados object in state %s." % self.state)
         :param ioctx_name: name of the pool
 
         :raises: :class:`TypeError`, :class:`Error`
-        :returns: Ioctx - Rados Ioctx object
+        :returns: Rados Ioctx object
         """
         self.require_state("connected")
         ioctx_name_raw = cstr(ioctx_name, 'ioctx_name')
@@ -986,7 +991,7 @@ Rados object in state %s." % self.state)
         :param pool_id: ID of the pool
 
         :raises: :class:`TypeError`, :class:`Error`
-        :returns: Ioctx - Rados Ioctx object
+        :returns: Rados Ioctx object
         """
         self.require_state("connected")
         cdef:
@@ -1004,7 +1009,7 @@ Rados object in state %s." % self.state)
                     cmd: str,
                     inbuf: bytes,
                     timeout: int = 0,
-                    target: Optional[Union[str, int]] = None) -> Tuple[int, str, bytes]:
+                    target: Optional[Union[str, int]] = None) -> Tuple[int, bytes, str]:
         """
         Send a command to the mon.
 
@@ -1078,7 +1083,7 @@ Rados object in state %s." % self.state)
                     osdid: int,
                     cmd: str,
                     inbuf: bytes,
-                    timeout: int = 0) -> Tuple[int, str, bytes]:
+                    timeout: int = 0) -> Tuple[int, bytes, str]:
         """
         osd_command(osdid, cmd, inbuf, outbuf, outbuflen, outs, outslen)
 
@@ -1181,7 +1186,7 @@ Rados object in state %s." % self.state)
                    pgid: str,
                    cmd: str,
                    inbuf: bytes,
-                   timeout: int = 0) -> Tuple[int, str, bytes]:
+                   timeout: int = 0) -> Tuple[int, bytes, str]:
         """
         pg_command(pgid, cmd, inbuf, outbuf, outbuflen, outs, outslen)
 
@@ -1412,16 +1417,20 @@ cdef class ObjectIterator(object):
             const char *key_ = NULL
             const char *locator_ = NULL
             const char *nspace_ = NULL
+            size_t key_size_ = 0
+            size_t locator_size_ = 0
+            size_t nspace_size_ = 0
 
         with nogil:
-            ret = rados_nobjects_list_next(self.ctx, &key_, &locator_, &nspace_)
+            ret = rados_nobjects_list_next2(self.ctx, &key_, &locator_, &nspace_,
+                                            &key_size_, &locator_size_, &nspace_size_)
 
         if ret < 0:
             raise StopIteration()
 
-        key = decode_cstr(key_)
-        locator = decode_cstr(locator_) if locator_ != NULL else None
-        nspace = decode_cstr(nspace_) if nspace_ != NULL else None
+        key = decode_cstr(key_[:key_size_])
+        locator = decode_cstr(locator_[:locator_size_]) if locator_ != NULL else None
+        nspace = decode_cstr(nspace_[:nspace_size_]) if nspace_ != NULL else None
         return Object(self.ioctx, key, locator, nspace)
 
     def __dealloc__(self):
@@ -1509,15 +1518,15 @@ ioctx '%s'" % self.ioctx.name)
             num_snaps = num_snaps * 2
         self.cur_snap = 0
 
-    def __iter__(self):
+    def __iter__(self) -> 'SnapIterator':
         return self
 
-    def __next__(self):
+    def __next__(self) -> 'Snap':
         """
         Get the next Snapshot
 
         :raises: :class:`Error`, StopIteration
-        :returns: Snap - next snapshot
+        :returns: next snapshot
         """
         if self.cur_snap >= self.max_snap:
             raise StopIteration
@@ -1569,7 +1578,7 @@ cdef class Snap(object):
         Find when a snapshot in the current pool occurred
 
         :raises: :class:`Error`
-        :returns: datetime - the data and time the snapshot was created
+        :returns: the data and time the snapshot was created
         """
         cdef time_t snap_time
 
@@ -1665,7 +1674,7 @@ cdef class Completion(object):
         The return value is set when the operation is complete or safe,
         whichever comes first.
 
-        :returns: int - return value of the operation
+        :returns: return value of the operation
         """
         with nogil:
             ret = rados_aio_get_return_value(self.rados_comp)
@@ -1889,6 +1898,19 @@ cdef class WriteOp(object):
         with nogil:
              rados_write_op_writesame(self.write_op, _to_write, _data_len, _write_len, _offset)
 
+    def cmpext(self, cmp_buf: bytes, offset: int = 0):
+        """
+        Ensure that given object range (extent) satisfies comparison
+        :param cmp_buf: buffer containing bytes to be compared with object contents
+        :param offset: object byte offset at which to start the comparison
+        """
+        cdef:
+            char *_cmp_buf = cmp_buf
+            size_t _cmp_buf_len = len(cmp_buf)
+            uint64_t _offset = offset
+        with nogil:
+            rados_write_op_cmpext(self.write_op, _cmp_buf, _cmp_buf_len, _offset, NULL)
+
 class WriteOpCtx(WriteOp, OpCtx):
     """write operation context manager"""
 
@@ -1904,6 +1926,19 @@ cdef class ReadOp(object):
     def release(self):
         with nogil:
             rados_release_read_op(self.read_op)
+
+    def cmpext(self, cmp_buf: bytes, offset: int = 0):
+        """
+        Ensure that given object range (extent) satisfies comparison
+        :param cmp_buf: buffer containing bytes to be compared with object contents
+        :param offset: object byte offset at which to start the comparison
+        """
+        cdef:
+            char *_cmp_buf = cmp_buf
+            size_t _cmp_buf_len = len(cmp_buf)
+            uint64_t _offset = offset
+        with nogil:
+            rados_read_op_cmpext(self.read_op, _cmp_buf, _cmp_buf_len, _offset, NULL)
 
     def set_flags(self, flags: int = LIBRADOS_OPERATION_NOFLAG):
         """
@@ -2834,7 +2869,7 @@ returned %d, but should return zero on success." % (self.name, ret))
 
         :raises: :class:`TypeError`
         :raises: :class:`Error`
-        :returns: str - data read from object
+        :returns: data read from object
         """
         self.require_ioctx_open()
         key_raw = cstr(key, 'key')
@@ -2918,7 +2953,7 @@ returned %d, but should return zero on success." % (self.name, ret))
         """
         Get pool usage statistics
 
-        :returns: dict - contains the following keys:
+        :returns: dict contains the following keys:
 
             - ``num_bytes`` (int) - size of pool in bytes
 
@@ -2974,7 +3009,7 @@ returned %d, but should return zero on success." % (self.name, ret))
 
         :raises: :class:`TypeError`
         :raises: :class:`Error`
-        :returns: bool - True on success
+        :returns: True on success
         """
         self.require_ioctx_open()
         key_raw = cstr(key, 'key')
@@ -2987,7 +3022,7 @@ returned %d, but should return zero on success." % (self.name, ret))
             raise make_ex(ret, "Failed to remove '%s'" % key)
         return True
 
-    def trunc(self, key: str, size: int):
+    def trunc(self, key: str, size: int) -> int:
         """
         Resize an object
 
@@ -2999,7 +3034,7 @@ returned %d, but should return zero on success." % (self.name, ret))
 
         :raises: :class:`TypeError`
         :raises: :class:`Error`
-        :returns: int - 0 on success, otherwise raises error
+        :returns: 0 on success, otherwise raises error
         """
 
         self.require_ioctx_open()
@@ -3071,7 +3106,7 @@ returned %d, but should return zero on success." % (self.name, ret))
 
         :raises: :class:`TypeError`
         :raises: :class:`Error`
-        :returns: str - value of the xattr
+        :returns: value of the xattr
         """
         self.require_ioctx_open()
 
@@ -3121,7 +3156,7 @@ returned %d, but should return zero on success." % (self.name, ret))
 
         :raises: :class:`TypeError`
         :raises: :class:`Error`
-        :returns: bool - True on success, otherwise raise an error
+        :returns: True on success, otherwise raise an error
         """
         self.require_ioctx_open()
 
@@ -3149,7 +3184,7 @@ returned %d, but should return zero on success." % (self.name, ret))
 
         :raises: :class:`TypeError`
         :raises: :class:`Error`
-        :returns: bool - True on success, otherwise raise an error
+        :returns: True on success, otherwise raise an error
         """
         self.require_ioctx_open()
 
@@ -3176,7 +3211,7 @@ returned %d, but should return zero on success." % (self.name, ret))
 
         :raises: :class:`TypeError`
         :raises: :class:`Error`
-        :returns: bool - True on success, otherwise raise an error
+        :returns: True on success, otherwise raise an error
         """
         self.require_ioctx_open()
 
@@ -3299,7 +3334,7 @@ returned %d, but should return zero on success." % (self.name, ret))
         """
         Get pool name
 
-        :returns: str - pool name
+        :returns: pool name
         """
         cdef:
             int name_len = 10

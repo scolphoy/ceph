@@ -1,4 +1,4 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
 // vim: ts=8 sw=2 smarttab
 
 #pragma once
@@ -46,6 +46,9 @@ inline std::ostream& operator<<(std::ostream &os, const node_type_t& type) {
 struct laddr_packed_t {
   laddr_t value;
 } __attribute__((packed));
+inline std::ostream& operator<<(std::ostream& os, const laddr_packed_t& laddr) {
+  return os << "laddr_packed(0x" << std::hex << laddr.value << std::dec << ")";
+}
 
 using match_stat_t = int8_t;
 constexpr match_stat_t MSTAT_END = -2; // index is search_position_t::end()
@@ -57,5 +60,13 @@ constexpr match_stat_t MSTAT_LT2 =  2; // key < index [pool/shard crush ns/oid] 
 constexpr match_stat_t MSTAT_LT3 =  3; // key < index [pool/shard]
 constexpr match_stat_t MSTAT_MIN = MSTAT_END;
 constexpr match_stat_t MSTAT_MAX = MSTAT_LT3;
+
+enum class node_delta_op_t : uint8_t {
+  INSERT,
+  SPLIT,
+  SPLIT_INSERT,
+  UPDATE_CHILD_ADDR,
+  SUBOP_UPDATE_VALUE = 0xff,
+};
 
 }

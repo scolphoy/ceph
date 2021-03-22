@@ -31,7 +31,6 @@ public:
     bool valid() const;
     seastar::future<> next();
     std::string key();
-    seastar::future<std::string> tail_key();
     ceph::buffer::list value();
     int status() const;
   private:
@@ -99,7 +98,7 @@ public:
   seastar::future<struct stat> stat(
     CollectionRef,
     const ghobject_t&) final;
-  seastar::future<ceph::bufferlist> omap_get_header(
+  read_errorator::future<ceph::bufferlist> omap_get_header(
     CollectionRef,
     const ghobject_t&) final;
   seastar::future<std::map<uint64_t, uint64_t>> fiemap(
@@ -120,6 +119,5 @@ private:
   std::unique_ptr<CephContext> cct;
   seastar::gate transaction_gate;
   std::unordered_map<coll_t, CollectionRef> coll_map;
-  seastar::shared_mutex tp_mutex;
 };
 }

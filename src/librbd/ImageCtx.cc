@@ -34,6 +34,7 @@
 #include "librbd/io/ImageDispatcher.h"
 #include "librbd/io/ObjectDispatcher.h"
 #include "librbd/io/QosImageDispatch.h"
+#include "librbd/io/IoOperations.h"
 #include "librbd/journal/StandardPolicy.h"
 #include "librbd/operation/ResizeRequest.h"
 
@@ -141,7 +142,7 @@ librados::IoCtx duplicate_io_ctx(librados::IoCtx& io_ctx) {
     } else {
       exclusive_lock_policy = new exclusive_lock::StandardPolicy(this);
     }
-    journal_policy = new journal::StandardPolicy<ImageCtx>(this);
+    journal_policy = new journal::StandardPolicy(this);
   }
 
   ImageCtx::ImageCtx(const string &image_name, const string &image_id,
@@ -534,6 +535,18 @@ librados::IoCtx duplicate_io_ctx(librados::IoCtx& io_ctx) {
     return 0;
   }
 
+  uint64_t ImageCtx::get_effective_image_size(snap_t in_snap_id) const {
+    auto raw_size = get_image_size(in_snap_id);
+    if (raw_size == 0) {
+      return 0;
+    }
+
+    io::Extents extents = {{raw_size, 0}};
+    io_image_dispatcher->remap_extents(
+            extents, io::IMAGE_EXTENTS_MAP_TYPE_PHYSICAL_TO_LOGICAL);
+    return extents.front().first;
+  }
+
   uint64_t ImageCtx::get_object_count(snap_t in_snap_id) const {
     ceph_assert(ceph_mutex_is_locked(image_lock));
     uint64_t image_size = get_image_size(in_snap_id);
@@ -847,6 +860,9 @@ librados::IoCtx duplicate_io_ctx(librados::IoCtx& io_ctx) {
       config.get_val<uint64_t>("rbd_qos_write_bps_limit"),
       config.get_val<uint64_t>("rbd_qos_write_bps_burst"),
       config.get_val<uint64_t>("rbd_qos_write_bps_burst_seconds"));
+    io_image_dispatcher->apply_qos_exclude_ops(
+      librbd::io::rbd_io_operations_from_string(
+        config.get_val<std::string>("rbd_qos_exclude_ops"), nullptr));
 
     if (!disable_zero_copy &&
         config.get_val<bool>("rbd_disable_zero_copy_writes")) {

@@ -64,7 +64,7 @@ endif()
 if(CMAKE_CXX_COMPILER_ID STREQUAL GNU)
   if(MINGW)
     # The MINGW headers are missing some "const" qualifiers.
-    add_compile_options($<$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>:-fpermissive>)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fpermissive>)
   else()
     string(APPEND CMAKE_EXE_LINKER_FLAGS " -rdynamic")
   endif()
@@ -113,7 +113,7 @@ if(NOT CMAKE_BUILD_TYPE)
       STRING "Default BUILD_TYPE is Debug, other options are: RelWithDebInfo, Release, and MinSizeRel." FORCE)
 endif()
 
-if(WITH_CEPH_DEBUG_MUTEX OR CMAKE_BUILD_TYPE STREQUAL Debug)
+if(WITH_CEPH_DEBUG_MUTEX)
   add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-DCEPH_DEBUG_MUTEX>)
 endif()
 
@@ -187,7 +187,9 @@ set(DIAGNOSTICS_COLOR "auto"
   CACHE STRING "Used if the C/C++ compiler supports the -fdiagnostics-color option. May have one of three values -- 'auto' (default), 'always', or 'never'. If set to 'always' and the compiler supports the option, 'make [...] | less -R' will make visible diagnostics colorization of compiler output.")
 
 if(COMPILER_SUPPORTS_DIAGNOSTICS_COLOR)
-  add_compile_options(-fdiagnostics-color=${DIAGNOSTICS_COLOR})
+  add_compile_options(
+    "$<$<COMPILE_LANGUAGE:C>:-fdiagnostics-color=${DIAGNOSTICS_COLOR}>"
+    "$<$<COMPILE_LANGUAGE:CXX>:-fdiagnostics-color=${DIAGNOSTICS_COLOR}>")
 endif()
 
 set(EXTRALIBS ${CMAKE_DL_LIBS})
@@ -385,6 +387,7 @@ set(libcommon_files
   osdc/Objecter.cc
   osdc/error_code.cc
   librbd/Features.cc
+  librbd/io/IoOperations.cc
   ${mds_files})
 if(WITH_JAEGER)
   list(APPEND libcommon_files common/tracer.cc)
@@ -556,7 +559,9 @@ endif(${WITH_LTTNG})
 
 add_subdirectory(global)
 
-find_package(Lua 5.3 REQUIRED)
+if(NOT WIN32)
+  find_package(Lua 5.3 REQUIRED)
+endif()
 
 # rados object classes
 add_subdirectory(cls)
@@ -594,10 +599,12 @@ if(NOT CEPH_BUILD_VIRTUALENV)
   set(CEPH_BUILD_VIRTUALENV ${CMAKE_BINARY_DIR})
 endif()
 
+if(NOT WIN32)
 add_subdirectory(pybind)
 add_subdirectory(ceph-volume)
 add_subdirectory(python-common)
 add_subdirectory(cephadm)
+endif(NOT WIN32)
 
 # Monitor
 add_subdirectory(mon)
@@ -627,10 +634,9 @@ endif()
 
 add_subdirectory(kv)
 add_subdirectory(os)
+
 if(NOT WIN32)
 add_subdirectory(blk)
-endif()
-
 add_subdirectory(osd)
 
 set(ceph_osd_srcs
@@ -653,6 +659,8 @@ set_target_properties(ceph-osd PROPERTIES
   POSITION_INDEPENDENT_CODE ${EXE_LINKER_USE_PIE}
   INSTALL_RPATH "")
 install(TARGETS ceph-osd DESTINATION bin)
+
+endif(NOT WIN32)
 
 if (WITH_CEPHFS)
   add_subdirectory(mds)
@@ -808,6 +816,10 @@ if(WITH_FUSE)
   install(PROGRAMS mount.fuse.ceph DESTINATION ${CMAKE_INSTALL_SBINDIR})
 endif(WITH_FUSE)
 
+if(WITH_DOKAN)
+  add_subdirectory(dokan)
+endif(WITH_DOKAN)
+
 add_subdirectory(journal)
 
 if(WITH_RBD)
@@ -839,6 +851,8 @@ if(WITH_KVS)
 endif(WITH_KVS)
 
 if(WITH_RADOSGW)
+  add_subdirectory(libkmip)
+
   set(civetweb_common_files civetweb/src/civetweb.c)
   add_library(civetweb_common_objs OBJECT ${civetweb_common_files})
   target_include_directories(civetweb_common_objs SYSTEM PRIVATE
@@ -875,6 +889,7 @@ configure_file(
   ${CMAKE_BINARY_DIR}/include/acconfig.h
 )
 
+if(NOT WIN32)
 # Everything you need to spin up a cluster with vstart.sh
 add_custom_target(vstart-base DEPENDS
     ceph-osd
@@ -911,6 +926,7 @@ endif()
 if(WITH_MGR)
   add_dependencies(vstart ceph-volume-venv-setup)
 endif()
+endif(NOT WIN32)
 
 # Everything you need to run CephFS tests
 add_custom_target(cephfs_testing DEPENDS

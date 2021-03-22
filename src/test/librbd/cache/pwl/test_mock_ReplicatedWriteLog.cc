@@ -36,13 +36,14 @@ inline ImageCtx *get_image_ctx(MockImageCtx *image_ctx) {
 } // namespace librbd
 
 #include "librbd/cache/pwl/AbstractWriteLog.cc"
-#include "librbd/cache/pwl/ReplicatedWriteLog.cc"
-template class librbd::cache::pwl::ReplicatedWriteLog<librbd::MockImageCtx>;
+#include "librbd/cache/pwl/rwl/WriteLog.cc"
+template class librbd::cache::pwl::rwl::WriteLog<librbd::MockImageCtx>;
 
 // template definitions
 #include "librbd/cache/ImageWriteback.cc"
 #include "librbd/cache/pwl/ImageCacheState.cc"
 #include "librbd/cache/pwl/Request.cc"
+#include "librbd/cache/pwl/rwl/Request.cc"
 #include "librbd/plugin/Api.cc"
 
 namespace librbd {
@@ -58,7 +59,7 @@ typedef io::Extent Extent;
 typedef io::Extents Extents;
 
 struct TestMockCacheReplicatedWriteLog : public TestMockFixture {
-  typedef librbd::cache::pwl::ReplicatedWriteLog<librbd::MockImageCtx> MockReplicatedWriteLog;
+  typedef librbd::cache::pwl::rwl::WriteLog<librbd::MockImageCtx> MockReplicatedWriteLog;
   typedef librbd::cache::pwl::ImageCacheState<librbd::MockImageCtx> MockImageCacheStateRWL;
   typedef librbd::cache::ImageWriteback<librbd::MockImageCtx> MockImageWriteback;
   typedef librbd::plugin::Api<librbd::MockImageCtx> MockApi;
@@ -82,7 +83,7 @@ struct TestMockCacheReplicatedWriteLog : public TestMockFixture {
     ASSERT_EQ(host, state.host);
     ASSERT_EQ(path, state.path);
     ASSERT_EQ(size, state.size);
-    ASSERT_EQ(config.get_val<bool>("rbd_rwl_log_periodic_stats"),
+    ASSERT_EQ(config.get_val<bool>("rbd_persistent_cache_log_periodic_stats"),
 	      state.log_periodic_stats);
   }
 

@@ -68,7 +68,7 @@ int64_t SpaceTrackerDetailed::SegmentMap::allocate(
     }
     bitmap[i] = true;
   }
-  return update_usage(block_size);
+  return update_usage(len);
 }
 
 int64_t SpaceTrackerDetailed::SegmentMap::release(
@@ -100,7 +100,7 @@ int64_t SpaceTrackerDetailed::SegmentMap::release(
     }
     bitmap[i] = false;
   }
-  return update_usage(-(int64_t)block_size);
+  return update_usage(-(int64_t)len);
 }
 
 bool SpaceTrackerDetailed::equals(const SpaceTrackerI &_other) const
@@ -226,7 +226,9 @@ SegmentCleaner::do_immediate_work_ret SegmentCleaner::do_immediate_work(
     return do_gc(t, get_immediate_bytes_to_gc());
   }).handle_error(
     do_immediate_work_ertr::pass_further{},
-    crimson::ct_error::assert_all{}
+    crimson::ct_error::assert_all{
+      "Invalid error in SegmentCleaner::do_immediate_work"
+    }
   );
 }
 
@@ -246,7 +248,7 @@ SegmentCleaner::rewrite_dirty_ret SegmentCleaner::rewrite_dirty(
     limit
   ).then([=, &t](auto dirty_list) {
     if (dirty_list.empty()) {
-      return do_immediate_work_ertr::now();
+      return rewrite_dirty_ertr::now();
     } else {
       update_journal_tail_target(dirty_list.front()->get_dirty_from());
     }
@@ -329,6 +331,7 @@ SegmentCleaner::do_gc_ret SegmentCleaner::do_gc(
 	  }).safe_then([&t, this] {
 	    if (scan_cursor->is_complete()) {
 	      t.mark_segment_to_release(scan_cursor->get_offset().segment);
+	      mark_releasing(scan_cursor->get_offset().segment);
 	      scan_cursor.reset();
 	    }
 	    return ExtentCallbackInterface::release_segment_ertr::now();

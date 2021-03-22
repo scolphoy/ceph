@@ -4,6 +4,9 @@
 #include "scrub_machine.h"
 
 #include <chrono>
+#include <typeinfo>
+
+#include <boost/core/demangle.hpp>
 
 #include "OSD.h"
 #include "OpRequest.h"
@@ -14,7 +17,6 @@
 #define dout_subsys ceph_subsys_osd
 #undef dout_prefix
 #define dout_prefix *_dout << " scrubberFSM "
-
 
 using namespace std::chrono;
 using namespace std::chrono_literals;
@@ -32,19 +34,19 @@ namespace Scrub {
 
 void on_event_creation(std::string_view nm)
 {
-  dout(20) << " scrubberFSM event: --vvvv---- " << nm << dendl;
+  dout(20) << " event: --vvvv---- " << nm << dendl;
 }
 
 void on_event_discard(std::string_view nm)
 {
-  dout(20) << " scrubberFSM event: --^^^^---- " << nm << dendl;
+  dout(20) << " event: --^^^^---- " << nm << dendl;
 }
 
 void ScrubMachine::my_states() const
 {
   for (auto si = state_begin(); si != state_end(); ++si) {
     const auto& siw{*si};  // prevents a warning re side-effects
-    dout(20) << __func__ << " : scrub-states : " << typeid(siw).name() << dendl;
+    dout(20) << " state: " << boost::core::demangle(typeid(siw).name()) << dendl;
   }
 }
 
@@ -75,12 +77,6 @@ NotActive::NotActive(my_context ctx) : my_base(ctx)
   dout(10) << "-- state -->> NotActive" << dendl;
 }
 
-sc::result NotActive::react(const IntervalChanged&)
-{
-  dout(15) << "NotActive::react(const IntervalChanged&)" << dendl;
-  return discard_event();
-}
-
 // ----------------------- ReservingReplicas ---------------------------------
 
 ReservingReplicas::ReservingReplicas(my_context ctx) : my_base(ctx)
@@ -95,6 +91,8 @@ sc::result ReservingReplicas::react(const ReservationFailure&)
   DECLARE_LOCALS;  // 'scrbr' & 'pg_id' aliases
   dout(10) << "ReservingReplicas::react(const ReservationFailure&)" << dendl;
 
+  // Mark PG so that we will try other PGs, before coming back to this one
+  scrbr->set_reserve_failed();
   // the Scrubber must release all resources and abort the scrubbing
   scrbr->clear_pgscrub_state();
   return transit<NotActive>();
@@ -190,11 +188,11 @@ NewChunk::NewChunk(my_context ctx) : my_base(ctx)
   bool got_a_chunk = scrbr->select_range();
   if (got_a_chunk) {
     dout(15) << __func__ << " selection OK" << dendl;
-    post_event(boost::intrusive_ptr<SelectedChunkFree>(new SelectedChunkFree{}));
+    post_event(SelectedChunkFree{});
   } else {
     dout(10) << __func__ << " selected chunk is busy" << dendl;
     // wait until we are available (transitioning to Blocked)
-    post_event(boost::intrusive_ptr<ChunkIsBusy>(new ChunkIsBusy{}));
+    post_event(ChunkIsBusy{});
   }
 }
 
@@ -212,7 +210,7 @@ sc::result NewChunk::react(const SelectedChunkFree&)
 WaitPushes::WaitPushes(my_context ctx) : my_base(ctx)
 {
   dout(10) << " -- state -->> Act/WaitPushes" << dendl;
-  post_event(boost::intrusive_ptr<ActivePushesUpd>(new ActivePushesUpd{}));
+  post_event(ActivePushesUpd{});
 }
 
 /*
@@ -237,7 +235,7 @@ sc::result WaitPushes::react(const ActivePushesUpd&)
 WaitLastUpdate::WaitLastUpdate(my_context ctx) : my_base(ctx)
 {
   dout(10) << " -- state -->> Act/WaitLastUpdate" << dendl;
-  post_event(boost::intrusive_ptr<UpdatesApplied>(new UpdatesApplied{}));
+  post_event(UpdatesApplied{});
 }
 
 void WaitLastUpdate::on_new_updates(const UpdatesApplied&)
@@ -246,7 +244,7 @@ void WaitLastUpdate::on_new_updates(const UpdatesApplied&)
   dout(10) << "WaitLastUpdate::on_new_updates(const UpdatesApplied&)" << dendl;
 
   if (scrbr->has_pg_marked_new_updates()) {
-    post_event(boost::intrusive_ptr<InternalAllUpdates>(new InternalAllUpdates{}));
+    post_event(InternalAllUpdates{});
   } else {
     // will be requeued by op_applied
     dout(10) << "wait for EC read/modify/writes to queue" << dendl;
@@ -273,14 +271,14 @@ BuildMap::BuildMap(my_context ctx) : my_base(ctx)
   DECLARE_LOCALS;  // 'scrbr' & 'pg_id' aliases
 
   // no need to check for an epoch change, as all possible flows that brought us here have
-  // an check_interval() verification of their final event.
+  // a check_interval() verification of their final event.
 
   if (scrbr->get_preemptor().was_preempted()) {
 
     // we were preempted, either directly or by a replica
     dout(10) << __func__ << " preempted!!!" << dendl;
     scrbr->mark_local_map_ready();
-    post_event(boost::intrusive_ptr<IntBmPreempted>(new IntBmPreempted{}));
+    post_event(IntBmPreempted{});
 
   } else {
 
@@ -295,12 +293,12 @@ BuildMap::BuildMap(my_context ctx) : my_base(ctx)
 
       dout(10) << "BuildMap::BuildMap() Error! Aborting. Ret: " << ret << dendl;
       // scrbr->mark_local_map_ready();
-      post_event(boost::intrusive_ptr<InternalError>(new InternalError{}));
+      post_event(InternalError{});
 
     } else {
 
       // the local map was created
-      post_event(boost::intrusive_ptr<IntLocalMapDone>(new IntLocalMapDone{}));
+      post_event(IntLocalMapDone{});
     }
   }
 }
@@ -320,7 +318,7 @@ DrainReplMaps::DrainReplMaps(my_context ctx) : my_base(ctx)
 {
   dout(10) << "-- state -->> Act/DrainReplMaps" << dendl;
   // we may have received all maps already. Send the event that will make us check.
-  post_event(boost::intrusive_ptr<GotReplicas>(new GotReplicas{}));
+  post_event(GotReplicas{});
 }
 
 sc::result DrainReplMaps::react(const GotReplicas&)
@@ -343,7 +341,7 @@ sc::result DrainReplMaps::react(const GotReplicas&)
 WaitReplicas::WaitReplicas(my_context ctx) : my_base(ctx)
 {
   dout(10) << "-- state -->> Act/WaitReplicas" << dendl;
-  post_event(boost::intrusive_ptr<GotReplicas>(new GotReplicas{}));
+  post_event(GotReplicas{});
 }
 
 sc::result WaitReplicas::react(const GotReplicas&)
@@ -379,7 +377,7 @@ WaitDigestUpdate::WaitDigestUpdate(my_context ctx) : my_base(ctx)
   // perform an initial check: maybe we already
   // have all the updates we need:
   // (note that DigestUpdate is usually an external event)
-  post_event(boost::intrusive_ptr<DigestUpdate>(new DigestUpdate{}));
+  post_event(DigestUpdate{});
 }
 
 sc::result WaitDigestUpdate::react(const DigestUpdate&)
@@ -413,10 +411,7 @@ ScrubMachine::ScrubMachine(PG* pg, ScrubMachineListener* pg_scrub)
   dout(15) << "ScrubMachine created " << m_pg_id << dendl;
 }
 
-ScrubMachine::~ScrubMachine()
-{
-  dout(20) << "~ScrubMachine " << m_pg_id << dendl;
-}
+ScrubMachine::~ScrubMachine() = default;
 
 // -------- for replicas -----------------------------------------------------
 
@@ -427,16 +422,6 @@ ReplicaWaitUpdates::ReplicaWaitUpdates(my_context ctx) : my_base(ctx)
   dout(10) << "-- state -->> ReplicaWaitUpdates" << dendl;
   DECLARE_LOCALS;  // 'scrbr' & 'pg_id' aliases
   scrbr->on_replica_init();
-}
-
-sc::result ReplicaWaitUpdates::react(const IntervalChanged&)
-{
-  DECLARE_LOCALS;  // 'scrbr' & 'pg_id' aliases
-  dout(10) << "ReplicaWaitUpdates::react(const IntervalChanged&)" << dendl;
-
-  // note: the master's reservation of us was just discarded by our caller
-  scrbr->replica_handling_done();
-  return transit<NotActive>();
 }
 
 /*
@@ -473,7 +458,7 @@ ActiveReplica::ActiveReplica(my_context ctx) : my_base(ctx)
   DECLARE_LOCALS;  // 'scrbr' & 'pg_id' aliases
   dout(10) << "-- state -->> ActiveReplica" << dendl;
   scrbr->on_replica_init();  // as we might have skipped ReplicaWaitUpdates
-  post_event(boost::intrusive_ptr<SchedReplica>(new SchedReplica{}));
+  post_event(SchedReplica{});
 }
 
 sc::result ActiveReplica::react(const SchedReplica&)
@@ -515,16 +500,6 @@ sc::result ActiveReplica::react(const SchedReplica&)
 
 
   // the local map was created. Send it to the primary.
-  scrbr->send_replica_map(PreemptionNoted::no_preemption);
-  scrbr->replica_handling_done();
-  return transit<NotActive>();
-}
-
-sc::result ActiveReplica::react(const IntervalChanged&)
-{
-  DECLARE_LOCALS;  // 'scrbr' & 'pg_id' aliases
-  dout(10) << "ActiveReplica::react(const IntervalChanged&) " << dendl;
-
   scrbr->send_replica_map(PreemptionNoted::no_preemption);
   scrbr->replica_handling_done();
   return transit<NotActive>();

@@ -656,7 +656,7 @@ std::ostream& operator<<(std::ostream& out, const spg_t &pg);
 // ----------------------
 
 class coll_t {
-  enum type_t {
+  enum type_t : uint8_t {
     TYPE_META = 0,
     TYPE_LEGACY_TEMP = 1,  /* no longer used */
     TYPE_PG = 2,
@@ -676,6 +676,7 @@ class coll_t {
     calc_str();
   }
 
+  friend class denc_coll_t;
 public:
   coll_t() : type(TYPE_META), removal_seq(0)
   {
@@ -842,6 +843,40 @@ inline std::ostream& operator<<(std::ostream& out, const ceph_object_layout &ol)
   return out;
 }
 
+struct denc_coll_t {
+  coll_t coll;
+
+  auto &get_type() const { return coll.type; }
+  auto &get_type() { return coll.type; }
+  auto &get_pgid() const { return coll.pgid; }
+  auto &get_pgid() { return coll.pgid; }
+
+  denc_coll_t() = default;
+  denc_coll_t(const denc_coll_t &) = default;
+  denc_coll_t(denc_coll_t &&) = default;
+
+  denc_coll_t &operator=(const denc_coll_t &) = default;
+  denc_coll_t &operator=(denc_coll_t &&) = default;
+
+  explicit denc_coll_t(const coll_t &coll) : coll(coll) {}
+  operator coll_t() const {
+    return coll;
+  }
+
+  bool operator<(const denc_coll_t &rhs) const {
+    return coll < rhs.coll;
+  }
+
+  DENC(denc_coll_t, v, p) {
+    DENC_START(1, 1, p);
+    denc(v.get_type(), p);
+    denc(v.get_pgid().pgid.m_pool, p);
+    denc(v.get_pgid().pgid.m_seed, p);
+    denc(v.get_pgid().shard.id, p);
+    DENC_FINISH(p);
+  }
+};
+WRITE_CLASS_DENC(denc_coll_t)
 
 
 // compound rados version type
@@ -1110,19 +1145,10 @@ public:
   }
 
   template<typename T>
-  T value_or(key_t key, const T& default_value) const {
-    auto i = opts.find(key);
-    if (i == opts.end()) {
-      return default_value;
-    }
-    return boost::get<T>(i->second);
-  }
-
-  template<typename T>
   T value_or(key_t key, T&& default_value) const {
     auto i = opts.find(key);
     if (i == opts.end()) {
-      return std::move(default_value);
+      return std::forward<T>(default_value);
     }
     return boost::get<T>(i->second);
   }
@@ -1495,6 +1521,7 @@ public:
 			    std::ostream *out) const;
   bool stretch_set_can_peer(const vector<int>& want, const OSDMap& osdmap,
 			    std::ostream *out) const {
+    if (!is_stretch_pool()) return true;
     set<int> swant;
     for (auto i : want) swant.insert(i);
     return stretch_set_can_peer(swant, osdmap, out);
@@ -5881,7 +5908,7 @@ struct object_info_t {
 
   void encode(ceph::buffer::list& bl, uint64_t features) const;
   void decode(ceph::buffer::list::const_iterator& bl);
-  void decode(ceph::buffer::list& bl) {
+  void decode(const ceph::buffer::list& bl) {
     auto p = std::cbegin(bl);
     decode(p);
   }
@@ -5905,7 +5932,7 @@ struct object_info_t {
       alloc_hint_flags(0)
   {}
 
-  explicit object_info_t(ceph::buffer::list& bl) {
+  explicit object_info_t(const ceph::buffer::list& bl) {
     decode(bl);
   }
 };

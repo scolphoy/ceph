@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.10.2)
 # remove cmake/modules/FindPython* once 3.12 is required
 
 project(ceph
-  VERSION 16.0.0
+  VERSION 17.0.0
   LANGUAGES CXX C ASM)
 
 foreach(policy
@@ -42,20 +42,30 @@ endif()
 if(MINGW)
   set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-allow-multiple-definition")
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-allow-multiple-definition")
+
+  # By default, cmake generates import libs for executables. The issue is that
+  # for rados and rbd, the executable import lib overrides the library import lib.
+  # For example, for rados.exe, it will end up generating a librados.dll.a import lib.
+  # We're providing custom rules to disable import libs for executables.
+  set(CMAKE_C_LINK_EXECUTABLE
+    "<CMAKE_C_COMPILER> <FLAGS> <CMAKE_C_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> -o <TARGET> ${CMAKE_GNULD_IMAGE_VERSION} <LINK_LIBRARIES>")
+  set(CMAKE_CXX_LINK_EXECUTABLE
+    "<CMAKE_CXX_COMPILER> <FLAGS> <CMAKE_CXX_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> -o <TARGET> ${CMAKE_GNULD_IMAGE_VERSION} <LINK_LIBRARIES>")
+
 endif()
 
 option(WITH_CCACHE "Build with ccache.")
 if(WITH_CCACHE)
-  find_program(CCACHE_FOUND ccache)
-  if(NOT CCACHE_FOUND)
+  find_program(CCACHE_EXECUTABLE ccache)
+  if(NOT CCACHE_EXECUTABLE)
     message(FATAL_ERROR "Can't find ccache. Is it installed?")
   endif()
-  message(STATUS "Building with ccache: ${CCACHE_FOUND}, CCACHE_DIR=$ENV{CCACHE_DIR}")
-  set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE ccache)
+  message(STATUS "Building with ccache: ${CCACHE_EXECUTABLE}, CCACHE_DIR=$ENV{CCACHE_DIR}")
+  set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_EXECUTABLE}")
   # ccache does not accelerate link (ld), but let it handle it. by passing it
   # along with cc to python's distutils, we are able to workaround
   # https://bugs.python.org/issue8027.
-  set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ccache)
+  set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK "${CCACHE_EXECUTABLE}")
 endif(WITH_CCACHE)
 
 option(WITH_MANPAGE "Build man pages." ON)
@@ -171,6 +181,8 @@ if(WITH_FUSE)
   set(HAVE_LIBFUSE ${FUSE_FOUND})
 endif()
 
+option(WITH_DOKAN "Dokan is here" OFF)
+
 option(WITH_XFS "XFS is here" ON)
 if(WITH_XFS)
   find_package(xfs)
@@ -221,6 +233,10 @@ CMAKE_DEPENDENT_OPTION(WITH_SYSTEM_LIBURING "Require and build with system libur
 
 CMAKE_DEPENDENT_OPTION(WITH_BLUESTORE_PMEM "Enable PMDK libraries" OFF
   "WITH_BLUESTORE" OFF)
+
+CMAKE_DEPENDENT_OPTION(WITH_RBD_MIGRATION_FORMAT_QCOW_V1
+  "Enable librbd QCOW v1 migration format support" ON
+  "WITH_RBD" OFF)
 
 CMAKE_DEPENDENT_OPTION(WITH_RBD_RWL "Enable librbd persistent write back cache" OFF
   "WITH_RBD" OFF)
@@ -304,7 +320,8 @@ if(WITH_LZ4)
   set(HAVE_LZ4 ${LZ4_FOUND})
 endif(WITH_LZ4)
 
-option(WITH_CEPH_DEBUG_MUTEX "Use debug ceph::mutex with lockdep" OFF)
+CMAKE_DEPENDENT_OPTION(WITH_CEPH_DEBUG_MUTEX "Use debug ceph::mutex with lockdep" ON
+  "CMAKE_BUILD_TYPE STREQUAL Debug" OFF)
 
 #if allocator is set on command line make sure it matches below strings
 set(ALLOCATOR "" CACHE STRING
@@ -340,7 +357,8 @@ else(ALLOCATOR)
   endif(gperftools_FOUND)
 endif(ALLOCATOR)
 
-if(HAVE_LIBTCMALLOC AND WITH_STATIC_LIBSTDCXX)
+# Mingw generates incorrect entry points when using "-pie".
+if(WIN32 OR (HAVE_LIBTCMALLOC AND WITH_STATIC_LIBSTDCXX))
   set(EXE_LINKER_USE_PIE FALSE)
 else()
   set(EXE_LINKER_USE_PIE ${ENABLE_SHARED})
@@ -448,6 +466,7 @@ endif (WITH_RADOSGW)
 #option for CephFS
 option(WITH_CEPHFS "CephFS is enabled" ON)
 
+if(NOT WIN32)
 # Please specify 3.[0-7] if you want to build with a certain version of python3.
 set(WITH_PYTHON3 "3" CACHE STRING "build with specified python3 version")
 if(NOT WITH_PYTHON3 STREQUAL "3")
@@ -470,6 +489,7 @@ if(WITH_MGR)
   endif()
   # Boost dependency check deferred to Boost section
 endif(WITH_MGR)
+endif(NOT WIN32)
 
 option(WITH_THREAD_SAFE_RES_QUERY "res_query is thread safe" OFF)
 if(WITH_THREAD_SAFE_RES_QUERY)
@@ -576,7 +596,7 @@ option(WITH_SYSTEM_BOOST "require and build with system Boost" OFF)
 # Boost::thread depends on Boost::atomic, so list it explicitly.
 set(BOOST_COMPONENTS
   atomic chrono thread system regex random program_options date_time
-  iostreams context coroutine)
+  iostreams context coroutine filesystem)
 set(BOOST_HEADER_COMPONENTS container)
 
 if(WITH_MGR)
@@ -584,7 +604,7 @@ if(WITH_MGR)
     python${MGR_PYTHON_VERSION_MAJOR}${MGR_PYTHON_VERSION_MINOR})
 endif()
 if(WITH_SEASTAR)
-  list(APPEND BOOST_COMPONENTS filesystem timer)
+  list(APPEND BOOST_COMPONENTS timer)
 endif()
 
 if(WITH_RADOSGW AND WITH_RADOSGW_LUA_PACKAGES)

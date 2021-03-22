@@ -1,8 +1,12 @@
+from typing import Optional, TYPE_CHECKING
 import unittest
 import time
 import logging
 
 from teuthology.orchestra.run import CommandFailedError
+
+if TYPE_CHECKING:
+    from tasks.mgr.mgr_test_case import MgrCluster
 
 log = logging.getLogger(__name__)
 
@@ -20,9 +24,10 @@ class CephTestCase(unittest.TestCase):
     mounts = None
     fs = None
     recovery_fs = None
+    backup_fs = None
     ceph_cluster = None
     mds_cluster = None
-    mgr_cluster = None
+    mgr_cluster: Optional['MgrCluster'] = None
     ctx = None
 
     mon_manager = None

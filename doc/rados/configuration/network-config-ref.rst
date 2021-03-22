@@ -187,6 +187,7 @@ section of your Ceph configuration file.
 		# ... elided configuration
 		public_network = {public-network/netmask}
 
+.. _cluster-network:
 
 Cluster Network
 ---------------
@@ -421,19 +422,6 @@ Ceph disables TCP buffering by default.
 :Type: 32-bit Integer
 :Required: No
 :Default: ``0``
-
-
-``ms_tcp_read_timeout``
-
-:Description: If a client or daemon makes a request to another Ceph daemon and
-              does not drop an unused connection, the ``ms tcp read timeout`` 
-              defines the connection as idle after the specified number 
-              of seconds.
-
-:Type: Unsigned 64-bit Integer
-:Required: No
-:Default: ``900`` 15 minutes.
-
 
 
 .. _Scalability and High Availability: ../../../architecture#scalability-and-high-availability

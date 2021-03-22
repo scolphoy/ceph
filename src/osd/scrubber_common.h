@@ -116,9 +116,9 @@ struct ScrubPgIF {
 
   // --------------- triggering state-machine events:
 
-  virtual void send_start_scrub(epoch_t epoch_queued) = 0;
+  virtual void initiate_regular_scrub(epoch_t epoch_queued) = 0;
 
-  virtual void send_start_after_repair(epoch_t epoch_queued) = 0;
+  virtual void initiate_scrub_after_repair(epoch_t epoch_queued) = 0;
 
   virtual void send_scrub_resched(epoch_t epoch_queued) = 0;
 
@@ -140,8 +140,6 @@ struct ScrubPgIF {
 
   // --------------------------------------------------
 
-  virtual void reset_epoch(epoch_t epoch_queued) = 0;
-
   [[nodiscard]] virtual bool are_callbacks_pending()
     const = 0;	// currently only used for an assert
 
@@ -151,6 +149,10 @@ struct ScrubPgIF {
    * - for replicas: upon receiving the scrub request from the primary
    */
   [[nodiscard]] virtual bool is_scrub_active() const = 0;
+
+  [[nodiscard]] virtual bool get_reserve_failed() const = 0;
+  virtual void set_reserve_failed() = 0;
+  virtual void clear_reserve_failed() = 0;
 
   /// are we waiting for resource reservation grants form our replicas?
   [[nodiscard]] virtual bool is_reserving() const = 0;
@@ -231,8 +233,16 @@ struct ScrubPgIF {
   virtual void unreserve_replicas() = 0;
 
   /**
+   *  "forget" all replica reservations. No messages are sent to the
+   *  previously-reserved.
+   *
+   *  Used upon interval change. The replicas' state is guaranteed to
+   *  be reset separately by the interval-change event.
+   */
+  virtual void discard_replica_reservations() = 0;
+
+  /**
    * clear both local and OSD-managed resource reservation flags
-   * (note: no replica un/reservation messages are involved!)
    */
   virtual void clear_scrub_reservations() = 0;
 
